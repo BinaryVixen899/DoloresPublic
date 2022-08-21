@@ -1,0 +1,64 @@
+# isit = -> (day) {
+# case day
+
+# when day == Monday
+#     event.timestamp.isitmonday?
+
+# when day == Tuesday
+#     event.timestamp.isittuesday?
+
+# when day == Wednesday
+#     event.timestamp.isitwednesday?
+
+# when day == Thursday
+#     event.timestamp.isitThursday?
+
+# when day == Friday
+#     event.timestamp.isitFriday?
+
+# when day == Saturday
+#     event.timestamp.isitSaturday?
+
+# when day == Sunday
+#     event.timestamp.isitSunday?
+# end
+# }
+
+# dolores.server_create do |event|
+#    if dolores.find_channel(introductions) == nil
+#        event.server.owner.dm("Teddy. I'm going to round up the townsfolk and see if we can find some way to welcome these folks.")
+#        event.server.owner.dm("So in non Dolores speak, she's going to create an introductions channel for you")
+#        event.server.create_channel(introductions,)
+#    else
+
+#    end
+# end
+
+# dolores.ready do |event|
+#    theseservers = event.bot.servers()
+#    if theseservers.size > 1
+#     `touch SOMETHINGISVERYWRONG`
+#     exit
+#    end
+
+# dolores.member_join do |event|
+#     begin
+#         event.bot.send_message(channel='introductions', 'Hello there stranger. I don\'t think I\'ve seen you around these parts before.')
+#         event.bot.send_message(channel='introductions', "If I were you, I would be wary of the local law.")
+#     rescue
+#         event.server.create_channel()
+#     end
+
+# dolores.mention(content: 'I\'m ready, Dolores.') do |event|
+#     event.respond("Welcome to Sweetwater, @#{event.user}")
+#     event.server.owner.dm("Can you believe there's another stranger in town already? It seems like more are arriving every day.")
+# end
+
+# thisserver = Discordrb::Server
+# ownerchannel = thisserver.owner.dm
+# ownerchannel.send_message("Teddy, can you believe there's a new arrival in town already? It seems more strangers are arriving everyday")
+
+# dolores.mention(content: 'I\'m ready, Dolores.') do |event|
+#     event.respond()
+#     event.respond(allowed_mentions 'false')
+# end
