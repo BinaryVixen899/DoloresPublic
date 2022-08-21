@@ -1,0 +1,14 @@
+[Unit]
+Description=I've had such strange dreams
+After=network.target
+StartLimitBurst=5
+StartLimitIntervalSec=10
+[Service]
+Type=simple
+Restart=always
+RestartSec=1
+User=lealac
+ExecStart=/usr/bin/env php /path/to/server.php
+
+[Install]
+WantedBy=multi-user.target

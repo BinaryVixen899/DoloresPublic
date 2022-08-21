@@ -1,0 +1,16 @@
+version: '3.9'
+
+services: 
+  dolores:
+    build: 
+      context: ../prod
+      dockerfile: ../IAC/Dockerfile 
+    container_name: Dolores
+    
+    # networks:
+    #   - host
+
+    # command: bundle install && ruby dolores.rb
+
+  
+
