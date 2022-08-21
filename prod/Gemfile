@@ -1,0 +1,24 @@
+# frozen_string_literal: true
+
+source 'https://rubygems.org'
+
+git_source(:github) { |repo_name| "https://github.com/#{repo_name}" }
+
+# gem "rails"
+gem 'discordrb'
+gem 'nokogiri'
+gem 'pry', '~> 0.14.1'
+gem 'sequel'
+gem 'rest'
+gem 'dotenv'
+gem 'logger'
+gem 'solargraph'
+gem 'net'
+gem 'sqlite3', '~> 1.4'
+
+
+gem "json", "~> 2.6"
+
+gem "rspec", "~> 3.10"
+
+gem "webmock", "~> 3.14"
