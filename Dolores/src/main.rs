@@ -1,16 +1,30 @@
 use std::env; 
 
 use serenity::async_trait;
+use serenity::http::error;
+use serenity::model::prelude::Channel;
+use serenity::model::prelude::ChannelId;
+use serenity::model::prelude::Guild;
+use serenity::model::prelude::GuildChannel;
+use serenity::model::prelude::GuildWelcomeChannel;
 use serenity::prelude::*;
 
 use serenity::model::channel::Message;
 use serenity::model::prelude::UserId;
 use serenity::model::gateway::Ready;
+use serenity::model::prelude::Member;
+use serenity::model::prelude::Reaction;
 
+use serenity::model::gateway::Activity;
+
+
+use serenity::framework::standard::Args;
 use serenity::framework::standard::macros::{command, group};
 use serenity::framework::standard::{StandardFramework, CommandResult,};
 use serenity::http::Http;
+use serenity::utils::GuildChannelParseError;
 use serenity::utils::MessageBuilder;
+use tokio::sync::watch;
 
 
 
@@ -18,21 +32,18 @@ use serenity::utils::MessageBuilder;
 #[commands(EllenSpecies)]
 #[commands(EllenGender)]
 
-// Create commands here
+// I do not understand why we have this random struct
 struct General;
+
 
 struct Handler;
 
 #[async_trait]
 impl EventHandler for Handler {
-//    here is where we do some async func message stuff
 
 
-async fn message(&self, context: Context, msg: Message){
-
-        // Refactor all of this with a match statement
+async fn message(&self, ctx: Context, msg: Message){
   
-
       // You cannot just match on msg.content with a string because it's a struct field of type String
       // This is why converting it to a String works, as well as why assigning its value to a variable works 
        let responsemessage = match msg.content.as_str() {
@@ -40,30 +51,65 @@ async fn message(&self, context: Context, msg: Message){
         "Mow" => String::from("Father, I think we're having Kieran for dinner tonight"),
         "Skunk Noises" => String::from("No, she is too precious to eat"),
         "Chirp" => String::from("Father, I think we're having Kauko for dinner!"),
-        "Yip Yap!" => String::from("Father, I think I've found dinner. And it's coyote.")
+        "Yip Yap!" => String::from("Father, I think I've found dinner. And it's coyote."),
+        _ => String::from("Pass")
         };
-        let response = MessageBuilder::new()
-        .push(responsemessage)
-        .build();
 
-    
-        // TODO: below command in msg.channel_id
-        // .push("Hello")
-        // .push_bold_safe(&msg.author.name)
-        // .push("welcome to Westworld!")
-        // .build();
-        // }
+        if responsemessage != String::from("Pass") {
+            let response = MessageBuilder::new()
+            .push(responsemessage)
+            .build();
+            
+            if let Err(why) = msg.channel_id.say(&ctx.http, response).await{
+                println!("The damn pony express failed to deliver the message! Goshdarnit!: {:?}", why)
+            }
+        }
 
-        // TODO: Ellen species and gender commands 
-
-
-   }
+        
+            
+}
 
 
-   async fn ready(&self, _: Context, ready: Ready) {
-    // This is where we declare everything about the Bot (avatar, music, etc.)
-    // TODO: Right away we need to get the values of the channels for it to listen in 
+
+
+async fn ready(&self, ctx: Context, ready: Ready) {
+    watchWestworld(&ctx);
     println!("{} is connected!", ready.user.name);
+}
+
+
+async fn reaction_add(&self, ctx: Context, add_reaction: Reaction) {
+    todo!()
+    
+}
+
+ 
+
+async fn guild_member_addition(&self, ctx: Context, new_member: Member) {
+    let content = MessageBuilder::new()
+    .push("Welcome to Westworld!")
+    .mention(&new_member.mention())
+    .build();
+    let message = ChannelId(2341324123123)
+    .send_message(&ctx, |m| m.content(content)).await;
+    
+    if let Err(why) = message {
+        eprintln!("Boss, there's a guest who's not supposed to be in Westworld, looks like they're wanted for: {:?}", why);
+    };
+
+    // do the error here 
+    // new_member.user.mention()
+    
+    // let response = MessageBuilder::new()
+    // .push(content)
+    // .build();
+    
+
+
+
+
+
+
 }
 
 
@@ -120,6 +166,7 @@ async fn main() {
     if let Err(why) = client.start().await {
         println!("We failed, we failed to start listening for events: {:?}", why)
     }
+    
 
 
     
@@ -139,3 +186,11 @@ async fn EllenSpecies() -> CommandResult {
 async fn EllenGender() -> CommandResult {
     todo!()
 }
+
+async fn watchWestworld(ctx: &Context) -> CommandResult {
+    ctx.set_activity(Activity::watching("Westworld")).await;
+    // TODO: Make what Dolores activity is change every day 
+
+    Ok(())
+}
+
