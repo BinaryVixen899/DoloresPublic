@@ -155,6 +155,7 @@ async fn main() {
     
 
     // Declare my intents
+    // TODO: Edit these, they determine what events the bot will be notifed about
     let intents = GatewayIntents::non_privileged();
 
     let mut client = Client::builder(token, intents)
@@ -167,10 +168,6 @@ async fn main() {
         println!("We failed, we failed to start listening for events: {:?}", why)
     }
     
-
-
-    
-
     // TODO: At some point we need to tell it what server to connect to 
     
     
