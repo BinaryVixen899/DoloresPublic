@@ -1,32 +1,26 @@
 use std::env;
-use std::result;
 
 use reqwest::header::ACCEPT;
-use reqwest::header::ACCEPT_ENCODING;
-use serenity::async_trait;
-use serenity::http::error;
-use serenity::model::prelude::Channel;
-use serenity::model::prelude::ChannelId;
-use serenity::model::prelude::Guild;
-use serenity::model::prelude::GuildChannel;
-use serenity::model::prelude::GuildWelcomeChannel;
+
 use serenity::prelude::*;
 
+use serenity::http::Http;
+use serenity::async_trait;
+
+use serenity::model::prelude::ChannelId;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
 use serenity::model::prelude::Member;
 use serenity::model::prelude::Reaction;
 use serenity::model::prelude::UserId;
-
 use serenity::model::gateway::Activity;
 
 use serenity::framework::standard::macros::{command, group};
-use serenity::framework::standard::Args;
 use serenity::framework::standard::{CommandResult, StandardFramework};
-use serenity::http::Http;
-use serenity::utils::GuildChannelParseError;
+
 use serenity::utils::MessageBuilder;
-use tokio::sync::watch;
+
+
 
 #[group]
 #[commands(EllenSpecies)]
@@ -42,6 +36,7 @@ impl EventHandler for Handler {
     async fn message(&self, ctx: Context, msg: Message) {
         // You cannot just match on msg.content with a string because it's a struct field of type String
         // This is why converting it to a String works, as well as why assigning its value to a variable works
+
         let responsemessage = match msg.content.as_str() {
             "What does this look like to you" => {
                 String::from("Doesn't look like much of anything to me.")
@@ -58,8 +53,7 @@ impl EventHandler for Handler {
 
             if let Err(why) = msg.channel_id.say(&ctx.http, response).await {
                 println!(
-                    "The damn pony express failed to deliver the message! Goshdarnit!: {:?}",
-                    why
+                    "The damn pony express failed to deliver the message! Goshdarnit!: {:?}", why
                 )
             }
         }
@@ -71,6 +65,8 @@ impl EventHandler for Handler {
     }
 
     async fn reaction_add(&self, ctx: Context, add_reaction: Reaction) {
+        // When someone new joins, if an admin adds a check reaction bring them in and give them roles 
+        // If an admin does an X reaction, kick them out 
         todo!()
     }
 
@@ -86,13 +82,6 @@ impl EventHandler for Handler {
         if let Err(why) = message {
             eprintln!("Boss, there's a guest who's not supposed to be in Westworld, looks like they're wanted for: {:?}", why);
         };
-
-        // do the error here
-        // new_member.user.mention()
-
-        // let response = MessageBuilder::new()
-        // .push(content)
-        // .build();
     }
 }
 
@@ -103,18 +92,19 @@ async fn main() {
     // Let's use an env file for the token and server to connect to
     dotenv::dotenv().expect("Teddy, have you seen the .env file?");
 
-    // Again, what declares dotenv?
-
     //TODO: Disabled commands
+    // Maybe give the CLI user a list of commands to enable and then dynamically pass in disabled ones
     // let disabled = vec![""].into_iter().map(|x| x.to_string()).collect();
-
-    let botuid = Some(UserId(234234234));
+    
+    // TODO: Refactor this, there has got to be a better way to do it.
+    let botuseridstring = env::var("BOT_USER_ID").expect("But no user ID existed!");
+    let botu64 = botuseridstring.parse::<u64>().unwrap();
+    let botuid = Some(UserId(botu64));
 
     // Create framework
     let framework = StandardFramework::new().configure(|c| {
         c.allow_dm(true)
             .case_insensitivity(true)
-            .disabled_commands(disabled)
             .on_mention(botuid)
             .prefix("!")
     });
@@ -122,11 +112,6 @@ async fn main() {
     let token = env::var("DISCORD_TOKEN").expect("But there was no token!");
 
     let http = Http::new(&token);
-
-    let bot_id = match http.get_current_user().await {
-        Ok(bot_id) => (bot_id.id),
-        Err(why) => panic!("Couldn't access the bot id: {why:?}"),
-    };
 
     // Declare my intents
     // TODO: Edit these, they determine what events the bot will be notifed about
@@ -145,7 +130,6 @@ async fn main() {
         )
     }
 
-    // TODO: At some point we need to tell it what server to connect to
 }
 
 #[command]
@@ -181,9 +165,8 @@ async fn EllenGender() -> CommandResult {
     todo!()
 }
 
-async fn watchWestworld(ctx: &Context) -> CommandResult {
+async fn watchWestworld(ctx: &Context) {
     ctx.set_activity(Activity::watching("Westworld")).await;
     // TODO: Make what Dolores activity is change every day
 
-    Ok(())
 }
