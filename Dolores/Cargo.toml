@@ -1,5 +1,5 @@
 [package]
-name = "Dolores"
+name = "dolores"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 serenity = "0.11"
-tokio = { version = "1.20.1", features = ["rt"] }
+tokio = { version = "1.20.1", features = ["rt", "macros", "rt-multi-thread"] }
 dotenv = "0.15.0"
 serde_json = "1.0"
 reqwest = { version = "0.11", features = ["json"] }

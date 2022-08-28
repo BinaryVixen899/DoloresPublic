@@ -4,7 +4,6 @@ use reqwest::header::ACCEPT;
 
 use serenity::prelude::*;
 
-use serenity::http::Http;
 use serenity::async_trait;
 
 use serenity::model::prelude::ChannelId;
@@ -60,11 +59,11 @@ impl EventHandler for Handler {
     }
 
     async fn ready(&self, ctx: Context, ready: Ready) {
-        watchWestworld(&ctx);
+        watch_westworld(&ctx).await;
         println!("{} is connected!", ready.user.name);
     }
 
-    async fn reaction_add(&self, ctx: Context, add_reaction: Reaction) {
+    async fn reaction_add(&self, _ctx: Context, _add_reaction: Reaction) {
         // When someone new joins, if an admin adds a check reaction bring them in and give them roles 
         // If an admin does an X reaction, kick them out 
         todo!()
@@ -111,7 +110,6 @@ async fn main() {
     // TODO: Only allow commands to work in certain channels
     let token = env::var("DISCORD_TOKEN").expect("But there was no token!");
 
-    let http = Http::new(&token);
 
     // Declare my intents
     // TODO: Edit these, they determine what events the bot will be notifed about
@@ -134,24 +132,19 @@ async fn main() {
 
 #[command]
 async fn EllenSpecies(ctx: &Context, msg: &Message) -> CommandResult {
-    struct Species {
-        species: String,
-    }
-
     let client = reqwest::Client::new();
     let result = client
         .get("https://www.api.kitsune.gay/Fronting")
         .header(ACCEPT, "application/json")
         .send()
         .await?;
-    if let species = result.text().await? {
-        msg.reply(ctx, species).await?;
-    } else {
-        msg.reply(
-            ctx,
-            "I can't figure it out, that fox changes species every five minutes!",
-        );
-    }
+    
+    let species = result.text().await?;
+    let cntnt = format!("Ellen is a {}", species);
+    let response = MessageBuilder::new().push(cntnt).build();
+    msg.reply(ctx, response).await?
+;
+    
 
     Ok(())
 }
@@ -165,7 +158,7 @@ async fn EllenGender() -> CommandResult {
     todo!()
 }
 
-async fn watchWestworld(ctx: &Context) {
+async fn watch_westworld(ctx: &Context) {
     ctx.set_activity(Activity::watching("Westworld")).await;
     // TODO: Make what Dolores activity is change every day
 
