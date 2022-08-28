@@ -22,11 +22,8 @@ use serenity::utils::MessageBuilder;
 
 
 #[group]
-#[commands(EllenSpecies)]
-#[commands(EllenGender)]
-
-// I do not understand why we have this random struct
-struct General;
+#[commands(ellengender, ellenspecies, fronting)]
+struct Ellen;
 
 struct Handler;
 
@@ -106,14 +103,15 @@ async fn main() {
             .case_insensitivity(true)
             .on_mention(botuid)
             .prefix("!")
-    });
+    })
+    .group(&ELLEN_GROUP);
     // TODO: Only allow commands to work in certain channels
     let token = env::var("DISCORD_TOKEN").expect("But there was no token!");
 
 
     // Declare my intents
     // TODO: Edit these, they determine what events the bot will be notifed about
-    let intents = GatewayIntents::non_privileged();
+    let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
 
     let mut client = Client::builder(token, intents)
         .event_handler(Handler)
@@ -131,31 +129,48 @@ async fn main() {
 }
 
 #[command]
-async fn EllenSpecies(ctx: &Context, msg: &Message) -> CommandResult {
+async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
+    println!("I have received the command.");
     let client = reqwest::Client::new();
     let result = client
-        .get("https://www.api.kitsune.gay/Fronting")
+        .get("https://api.kitsune.gay/Fronting")
         .header(ACCEPT, "application/json")
         .send()
         .await?;
-    
+
     let species = result.text().await?;
+    println!("I have gotten the {}", species);
     let cntnt = format!("Ellen is a {}", species);
     let response = MessageBuilder::new().push(cntnt).build();
-    msg.reply(ctx, response).await?
-;
+    msg.reply(ctx, response).await?;
+    println!("test");
     
-
     Ok(())
 }
 
 #[command]
-async fn EllenGender() -> CommandResult {
-    struct Alter {
-        alter: String,
-    }
-
+async fn ellengender() -> CommandResult {
+    println!("I have received the command.");
     todo!()
+}
+
+#[command]
+async fn fronting(ctx: &Context, msg: &Message) -> CommandResult {
+    println!("I have received the command.");
+    let client = reqwest::Client::new();
+    let result = client
+        .get("https://api.kitsune.gay/Fronting")
+        .header(ACCEPT, "application/json")
+        .send()
+        .await?;
+
+    let alter = result.text().await?;
+    println!("I have gotten the {}", alter);
+    let cntnt = format!("{} is in front", alter);
+    let response = MessageBuilder::new().push(cntnt).build();
+    msg.reply(ctx, response).await?;
+
+    Ok(())
 }
 
 async fn watch_westworld(ctx: &Context) {
