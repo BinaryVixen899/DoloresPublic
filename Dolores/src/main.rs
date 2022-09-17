@@ -1,7 +1,12 @@
+use std::collections::HashMap;
 use std::env;
 
+use libhoney::FieldHolder;
+use libhoney::Value;
+use libhoney::transmission::Transmission;
 use reqwest::header::ACCEPT;
 
+use serenity::Client;
 use serenity::prelude::*;
 
 use serenity::async_trait;
@@ -18,6 +23,7 @@ use serenity::framework::standard::macros::{command, group};
 use serenity::framework::standard::{CommandResult, StandardFramework};
 
 use serenity::utils::MessageBuilder;
+// TD: read in the honeycomb token as a static or constant variable 
 
 
 
@@ -87,6 +93,19 @@ impl EventHandler for Handler {
 async fn main() {
     // Let's use an env file for the token and server to connect to
     dotenv::dotenv().expect("Teddy, have you seen the .env file?");
+    
+        // Starting Honeycomb
+        let mut honeycombclient = libhoney::init(libhoney::Config{
+            options: libhoney::client::Options {
+              api_key: env::var("HONEYCOMB_API_KEY").unwrap(),
+              dataset: "Dolores".to_string(),
+              ..libhoney::client::Options::default()
+            },
+            transmission_options: libhoney::transmission::Options::default(),
+          });
+          
+        //TD: I suppose we should close the client at some point but I'm not sure at _what_ point 
+        //   client.close();
 
     //TODO: Disabled commands
     // Maybe give the CLI user a list of commands to enable and then dynamically pass in disabled ones
@@ -109,6 +128,7 @@ async fn main() {
     let token = env::var("DISCORD_TOKEN").expect("But there was no token!");
 
 
+
     // Declare my intents
     // TODO: Edit these, they determine what events the bot will be notifed about
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
@@ -123,13 +143,46 @@ async fn main() {
         println!(
             "We failed, we failed to start listening for events: {:?}",
             why
-        )
+        );
+        let mut data: HashMap<String, Value> = HashMap::new();
+        // I wonder if we will have an issue with why. Is it consumed? 
+        data.insert("error".to_string(), Value::String(why.to_string()));
+        let mut ev = honeycombclient.new_event();
+        ev.add(data);
+        ev.send(&mut honeycombclient).err();
+
     }
+    honeycombclient.close();
+
+
 
 }
 
+// so i'm trying to pass through a reference to a struct
+// I cannot do that because I don't know what size the struct is 
+// What I don't understand is why this says fnpointer, EllenSpecies is a function but these are not 
+// I think maybe it's fucking up ellenspecies
+// okay so maybe we can't or just don't want to pass this to every function
+// Screw it, what if we just create a function that returns a reference to honeycomb client? Except I worry we're not going to be able to do that because borrow checker...
+
 #[command]
 async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
+    let mut honeycombclient = libhoney::init(libhoney::Config{
+        options: libhoney::client::Options {
+          api_key: env::var("HONEYCOMB_API_KEY").unwrap(),
+          dataset: "Dolores".to_string(),
+          ..libhoney::client::Options::default()
+        },
+        transmission_options: libhoney::transmission::Options::default(),
+      });
+    
+    let mut data: HashMap<String, Value> = HashMap::new();    
+    let mut ev = honeycombclient.new_event();
+    data.insert("msg_id".to_string(), Value::String(msg.id.to_string()));
+    data.insert("channel_id".to_string(), Value::String(msg.channel_id.to_string()));
+    data.insert("command_type".to_string(), Value::String("ellenspecies".to_string()));
+    
+
     println!("I have received the command.");
     let client = reqwest::Client::new();
     let result = client
@@ -139,23 +192,42 @@ async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
         .await?;
 
     let species = result.text().await?;
+    data.insert("ellen_species".to_string(), Value::String(species.to_string()));
+    ev.add(data);
     println!("I have gotten the {}", species);
     let cntnt = format!("Ellen is a {}", species);
     let response = MessageBuilder::new().push(cntnt).build();
     msg.reply(ctx, response).await?;
-    println!("test");
-    
+    ev.send(&mut honeycombclient).err();    
     Ok(())
 }
 
 #[command]
 async fn ellengender() -> CommandResult {
+    // let mut honeycombclient = libhoney::init(libhoney::Config{
+    //     options: libhoney::client::Options {
+    //       api_key: env::var("HONEYCOMB_API_KEY").unwrap(),
+    //       dataset: "Dolores".to_string(),
+    //       ..libhoney::client::Options::default()
+    //     },
+    //     transmission_options: libhoney::transmission::Options::default(),
+    //   });
+
     println!("I have received the command.");
     todo!()
 }
 
 #[command]
 async fn fronting(ctx: &Context, msg: &Message) -> CommandResult {
+    let mut honeycombclient = libhoney::init(libhoney::Config{
+        options: libhoney::client::Options {
+          api_key: env::var("HONEYCOMB_API_KEY").unwrap(),
+          dataset: "Dolores".to_string(),
+          ..libhoney::client::Options::default()
+        },
+        transmission_options: libhoney::transmission::Options::default(),
+      });
+      
     println!("I have received the command.");
     let client = reqwest::Client::new();
     let result = client
@@ -163,13 +235,22 @@ async fn fronting(ctx: &Context, msg: &Message) -> CommandResult {
         .header(ACCEPT, "application/json")
         .send()
         .await?;
+    let mut data: HashMap<String, Value> = HashMap::new();    
+    let mut ev = honeycombclient.new_event();
+    data.insert("msg_id".to_string(), Value::String(msg.id.to_string()));
+    data.insert("channel_id".to_string(), Value::String(msg.channel_id.to_string()));
+    data.insert("command_type".to_string(), Value::String("ellenfronting".to_string()));
+    
+
 
     let alter = result.text().await?;
     println!("I have gotten the {}", alter);
+    data.insert("ellen_alter".to_string(), Value::String(alter.to_string()));
+    ev.add(data);
     let cntnt = format!("{} is in front", alter);
     let response = MessageBuilder::new().push(cntnt).build();
     msg.reply(ctx, response).await?;
-
+    ev.send(&mut honeycombclient).err();
     Ok(())
 }
 
