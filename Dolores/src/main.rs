@@ -97,8 +97,8 @@ async fn main() {
         // Starting Honeycomb
         let mut honeycombclient = libhoney::init(libhoney::Config{
             options: libhoney::client::Options {
-              api_key: env::var("HONEYCOMB_API_KEY").unwrap(),
-              dataset: "Dolores".to_string(),
+              api_key: "7APJacT7J3dmdJrl5FB42D".to_string(),
+              dataset: "dolorestest".to_string(),
               ..libhoney::client::Options::default()
             },
             transmission_options: libhoney::transmission::Options::default(),
@@ -139,6 +139,7 @@ async fn main() {
         .await
         .expect("And it all started with, Wyatt");
 
+
     if let Err(why) = client.start().await {
         println!(
             "We failed, we failed to start listening for events: {:?}",
@@ -149,12 +150,11 @@ async fn main() {
         data.insert("error".to_string(), Value::String(why.to_string()));
         let mut ev = honeycombclient.new_event();
         ev.add(data);
-        ev.send(&mut honeycombclient).err();
-
+        ev.send(&mut honeycombclient).err(); 
+        
     }
+    honeycombclient.flush();
     honeycombclient.close();
-
-
 
 }
 
@@ -169,7 +169,7 @@ async fn main() {
 async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
     let mut honeycombclient = libhoney::init(libhoney::Config{
         options: libhoney::client::Options {
-          api_key: env::var("HONEYCOMB_API_KEY").unwrap(),
+          api_key: "7APJacT7J3dmdJrl5FB42D".to_string(),
           dataset: "Dolores".to_string(),
           ..libhoney::client::Options::default()
         },
@@ -198,7 +198,19 @@ async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
     let cntnt = format!("Ellen is a {}", species);
     let response = MessageBuilder::new().push(cntnt).build();
     msg.reply(ctx, response).await?;
-    ev.send(&mut honeycombclient).err();    
+    // ev.send(&mut honeycombclient); 
+    // honeycombclient.close();
+    match ev.send(&mut honeycombclient) {
+        Ok(()) => {
+            let response = honeycombclient.responses().iter().next().unwrap();
+            assert_eq!(response.error, None);
+        }
+        Err(e) => {
+            println!("Could not send event: {}", e);
+        }
+    }
+    honeycombclient.flush();
+    honeycombclient.close();
     Ok(())
 }
 
@@ -206,7 +218,7 @@ async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
 async fn ellengender() -> CommandResult {
     // let mut honeycombclient = libhoney::init(libhoney::Config{
     //     options: libhoney::client::Options {
-    //       api_key: env::var("HONEYCOMB_API_KEY").unwrap(),
+    //       api_key: "7APJacT7J3dmdJrl5FB42D".to_string(),
     //       dataset: "Dolores".to_string(),
     //       ..libhoney::client::Options::default()
     //     },
@@ -221,7 +233,7 @@ async fn ellengender() -> CommandResult {
 async fn fronting(ctx: &Context, msg: &Message) -> CommandResult {
     let mut honeycombclient = libhoney::init(libhoney::Config{
         options: libhoney::client::Options {
-          api_key: env::var("HONEYCOMB_API_KEY").unwrap(),
+          api_key: "7APJacT7J3dmdJrl5FB42D".to_string(),
           dataset: "Dolores".to_string(),
           ..libhoney::client::Options::default()
         },
@@ -251,6 +263,8 @@ async fn fronting(ctx: &Context, msg: &Message) -> CommandResult {
     let response = MessageBuilder::new().push(cntnt).build();
     msg.reply(ctx, response).await?;
     ev.send(&mut honeycombclient).err();
+    honeycombclient.flush();
+    honeycombclient.close();
     Ok(())
 }
 
