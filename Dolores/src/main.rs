@@ -97,7 +97,7 @@ async fn main() {
         // Starting Honeycomb
         let mut honeycombclient = libhoney::init(libhoney::Config{
             options: libhoney::client::Options {
-              api_key: "7APJacT7J3dmdJrl5FB42D".to_string(),
+              api_key: env::var("HONEYCOMB_API_KEY").unwrap().to_string(),
               dataset: "dolorestest".to_string(),
               ..libhoney::client::Options::default()
             },
@@ -169,7 +169,7 @@ async fn main() {
 async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
     let mut honeycombclient = libhoney::init(libhoney::Config{
         options: libhoney::client::Options {
-          api_key: "7APJacT7J3dmdJrl5FB42D".to_string(),
+            api_key: env::var("HONEYCOMB_API_KEY").unwrap().to_string(),
           dataset: "Dolores".to_string(),
           ..libhoney::client::Options::default()
         },
@@ -218,7 +218,7 @@ async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
 async fn ellengender() -> CommandResult {
     // let mut honeycombclient = libhoney::init(libhoney::Config{
     //     options: libhoney::client::Options {
-    //       api_key: "7APJacT7J3dmdJrl5FB42D".to_string(),
+    //       api_key: env::var("HONEYCOMB_API_KEY").unwrap().to_string(),
     //       dataset: "Dolores".to_string(),
     //       ..libhoney::client::Options::default()
     //     },
@@ -233,7 +233,7 @@ async fn ellengender() -> CommandResult {
 async fn fronting(ctx: &Context, msg: &Message) -> CommandResult {
     let mut honeycombclient = libhoney::init(libhoney::Config{
         options: libhoney::client::Options {
-          api_key: "7APJacT7J3dmdJrl5FB42D".to_string(),
+          api_key: env::var("HONEYCOMB_API_KEY").unwrap().to_string(),
           dataset: "Dolores".to_string(),
           ..libhoney::client::Options::default()
         },
