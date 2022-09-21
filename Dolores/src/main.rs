@@ -1,5 +1,8 @@
+use core::time;
 use std::collections::HashMap;
 use std::env;
+use std::process::exit;
+use std::thread::sleep_ms;
 
 use libhoney::FieldHolder;
 use libhoney::Value;
@@ -64,14 +67,29 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         watch_westworld(&ctx).await;
         println!("{} is connected!", ready.user.name);
+        // TODO: Lock this behind a key of some kind
+        // TODO: Random musical lyrics
+         let content = MessageBuilder::new()
+            .push("🎶🎶🎶But I'm alive, I'm alive, I am so alive, ")
+            .push("And I feed on the fear that's behind your eyes, ")
+            .push("And I need yout o need me it's no surprise, ")
+            .push("I'm aliveeeeeeeee🎶🎶🎶")
+            .build();
+        let message = ChannelId(511743033117638658);
+    if let Err(why) = message.send_message(&ctx, |m| m.content(content)).await {
+        eprintln!("I'M MELTING, MELTIIIIIIING {:?}", why);
+        exit(1)
+    };
     }
 
+    // TODO: Check if this crashes things
     async fn reaction_add(&self, _ctx: Context, _add_reaction: Reaction) {
         // When someone new joins, if an admin adds a check reaction bring them in and give them roles 
         // If an admin does an X reaction, kick them out 
         todo!()
     }
 
+    // TODO: Does this actually work? 
     async fn guild_member_addition(&self, ctx: Context, new_member: Member) {
         let content = MessageBuilder::new()
             .push("Welcome to Westworld!")
@@ -104,8 +122,6 @@ async fn main() {
             transmission_options: libhoney::transmission::Options::default(),
           });
           
-        //TD: I suppose we should close the client at some point but I'm not sure at _what_ point 
-        //   client.close();
 
     //TODO: Disabled commands
     // Maybe give the CLI user a list of commands to enable and then dynamically pass in disabled ones
@@ -158,59 +174,75 @@ async fn main() {
 
 }
 
-// so i'm trying to pass through a reference to a struct
-// I cannot do that because I don't know what size the struct is 
-// What I don't understand is why this says fnpointer, EllenSpecies is a function but these are not 
-// I think maybe it's fucking up ellenspecies
-// okay so maybe we can't or just don't want to pass this to every function
-// Screw it, what if we just create a function that returns a reference to honeycomb client? Except I worry we're not going to be able to do that because borrow checker...
 
 #[command]
 async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
-    let mut honeycombclient = libhoney::init(libhoney::Config{
-        options: libhoney::client::Options {
-            api_key: env::var("HONEYCOMB_API_KEY").unwrap().to_string(),
-          dataset: "Dolores".to_string(),
-          ..libhoney::client::Options::default()
-        },
-        transmission_options: libhoney::transmission::Options::default(),
-      });
+    // let mut honeycombclient = libhoney::init(libhoney::Config{
+    //     options: libhoney::client::Options {
+    //         api_key: env::var("HONEYCOMB_API_KEY").unwrap().to_string(),
+    //       dataset: "Dolores".to_string(),
+    //       ..libhoney::client::Options::default()
+    //     },
+    //     transmission_options: libhoney::transmission::Options::default(),
+    //   });
     
-    let mut data: HashMap<String, Value> = HashMap::new();    
-    let mut ev = honeycombclient.new_event();
-    data.insert("msg_id".to_string(), Value::String(msg.id.to_string()));
-    data.insert("channel_id".to_string(), Value::String(msg.channel_id.to_string()));
-    data.insert("command_type".to_string(), Value::String("ellenspecies".to_string()));
+    // let mut data: HashMap<String, Value> = HashMap::new();    
+    // let mut ev = honeycombclient.new_event();
+    // data.insert("msg_id".to_string(), Value::String(msg.id.to_string()));
+    // data.insert("channel_id".to_string(), Value::String(msg.channel_id.to_string()));
+    // data.insert("command_type".to_string(), Value::String("ellenspecies".to_string()));
     
 
-    println!("I have received the command.");
-    let client = reqwest::Client::new();
-    let result = client
-        .get("https://api.kitsune.gay/Fronting")
-        .header(ACCEPT, "application/json")
-        .send()
-        .await?;
+    // println!("I have received the command.");
+    // let client = reqwest::Client::new();
+    // let result = client
+    //     .get("https://api.kitsune.gay/Fronting")
+    //     .header(ACCEPT, "application/json")
+    //     .send()
+    //     .await;
+    
+    // // TODO: Look into the idiomatic way to do this. Rusty way?
+    // // ugh fine  
+    // let mut speciestext = String::from("Kitsune");
+    // if let Ok(response) = result {
+    //     match response.error_for_status() {
+    //         Ok(res) => (
+    //             speciestext = res.text().await.unwrap()
+    //         ),
+    //         // TODO: Change this before production so that we aren't accidentally giving debug info away 
+    //         Err(err) => (println!("{:?}", err.status())),
+    //     }
+        
 
-    let species = result.text().await?;
-    data.insert("ellen_species".to_string(), Value::String(species.to_string()));
-    ev.add(data);
-    println!("I have gotten the {}", species);
-    let cntnt = format!("Ellen is a {}", species);
-    let response = MessageBuilder::new().push(cntnt).build();
-    msg.reply(ctx, response).await?;
-    // ev.send(&mut honeycombclient); 
+    // }
+    
+    // else { 
+    //     println!("We either got an incorrect response or no response!")
+    //     // Return something witty from dolores about my species 
+    // }        
+    // let species = speciestext;
+    // data.insert("ellen_species".to_string(), Value::String(species.to_string()));
+    // ev.add(data);
+    // println!("I have gotten the {}", species);
+    // let cntnt = format!("Ellen is a {}", species);
+    // let response = MessageBuilder::new().push(cntnt).build();
+    // msg.reply(ctx, response).await?;
+    // // ev.send(&mut honeycombclient); 
+    // // honeycombclient.close();
+    // match ev.send(&mut honeycombclient) {
+    //     Ok(()) => {
+    //         let response = honeycombclient.responses().iter().next().unwrap();
+    //         let respstring = response.status_code.unwrap();
+    //         println!("{}", respstring.as_str());
+    //         assert_eq!(response.error, None);
+    //     }
+    //     Err(e) => {
+    //         println!("Could not send event: {}", e);
+    //     }
+    // }
+    // honeycombclient.flush();
     // honeycombclient.close();
-    match ev.send(&mut honeycombclient) {
-        Ok(()) => {
-            let response = honeycombclient.responses().iter().next().unwrap();
-            assert_eq!(response.error, None);
-        }
-        Err(e) => {
-            println!("Could not send event: {}", e);
-        }
-    }
-    honeycombclient.flush();
-    honeycombclient.close();
+    todo!();
     Ok(())
 }
 
@@ -239,32 +271,60 @@ async fn fronting(ctx: &Context, msg: &Message) -> CommandResult {
         },
         transmission_options: libhoney::transmission::Options::default(),
       });
-      
-    println!("I have received the command.");
+
+    let mut data: HashMap<String, Value> = HashMap::new();    
+    let mut ev = honeycombclient.new_event();
+    data.insert("msg_id".to_string(), Value::String(msg.id.to_string()));
+    data.insert("channel_id".to_string(), Value::String(msg.channel_id.to_string()));
+    data.insert("command_type".to_string(), Value::String("fronting".to_string()));
+    
+    
     let client = reqwest::Client::new();
     let result = client
         .get("https://api.kitsune.gay/Fronting")
         .header(ACCEPT, "application/json")
         .send()
-        .await?;
-    let mut data: HashMap<String, Value> = HashMap::new();    
-    let mut ev = honeycombclient.new_event();
-    data.insert("msg_id".to_string(), Value::String(msg.id.to_string()));
-    data.insert("channel_id".to_string(), Value::String(msg.channel_id.to_string()));
-    data.insert("command_type".to_string(), Value::String("ellenfronting".to_string()));
+        .await;
     
+    let mut frontingtext = String::from("Kitsune");
+    if let Ok(response) = result {
+        match response.error_for_status() {
+            Ok(res) => (
+                frontingtext = res.text().await.unwrap()
+            ),
+            // TODO: Change this before production so that we aren't accidentally giving debug info away 
+            Err(err) => (println!("{:?}", err.status())),
+        }
+        
 
-
-    let alter = result.text().await?;
-    println!("I have gotten the {}", alter);
-    data.insert("ellen_alter".to_string(), Value::String(alter.to_string()));
+    }
+    
+    else { 
+        println!("We either got an incorrect response or no response!")
+        // Return something witty from dolores about my species 
+    }        
+    let alter = frontingtext;
+    data.insert("ellen_species".to_string(), Value::String(alter.to_string()));
     ev.add(data);
+    println!("I have gotten the {}", alter);
     let cntnt = format!("{} is in front", alter);
     let response = MessageBuilder::new().push(cntnt).build();
     msg.reply(ctx, response).await?;
-    ev.send(&mut honeycombclient).err();
+    ev.send(&mut honeycombclient); 
+    match ev.send(&mut honeycombclient) {
+        Ok(()) => {
+            let response = honeycombclient.responses().iter().next().unwrap();
+            let respstring = response.status_code.unwrap();
+            println!("{}", respstring.as_str());
+            assert_eq!(response.error, None);
+        }
+        Err(e) => {
+            println!("Could not send event: {}", e);
+        }
+    }
     honeycombclient.flush();
     honeycombclient.close();
+    
     Ok(())
 }
 
