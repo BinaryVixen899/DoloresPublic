@@ -1,7 +1,11 @@
 use std::env;
+use std::error::Error;
+use std::time::Duration;
 
+use anyhow::Result;
 use reqwest::header::ACCEPT;
 
+use serde_json::Error as serdeerror;
 use serenity::prelude::*;
 
 use serenity::async_trait;
@@ -18,6 +22,13 @@ use serenity::framework::standard::macros::{command, group};
 use serenity::framework::standard::{CommandResult, StandardFramework};
 
 use serenity::utils::MessageBuilder;
+use tokio::stream;
+use async_stream::stream;
+use futures_core::stream::Stream;
+use futures_util::pin_mut;
+use futures_util::stream::StreamExt;
+use tokio::sync::mpsc::error;
+use async_stream::try_stream;
 
 
 
@@ -125,7 +136,18 @@ async fn main() {
             why
         )
     }
+    
+    let stream = poll_notion();
+    pin_mut!(stream);
+    while let Some(item) = stream.next().await {
+        print!("Ellen is a {:?} ", item);
+    }
+    // It's highly possible that the error here is because I have BOX in this function, and next has to be pinned. Meaning it cannot be moved into memory 
+    
 
+
+
+  
 }
 
 #[command]
@@ -176,5 +198,40 @@ async fn fronting(ctx: &Context, msg: &Message) -> CommandResult {
 async fn watch_westworld(ctx: &Context) {
     ctx.set_activity(Activity::watching("Westworld")).await;
     // TODO: Make what Dolores activity is change every day
+
+}
+
+async fn get_ellen_species() -> Result<String> {
+    let client = reqwest::Client::new();
+    let species = client
+        .get("https://api.kitsune.gay/Fronting")
+        .header(ACCEPT, "application/json")
+        .send()
+        .await?
+        .text()
+        .await?;  
+    // First things first, let's try switching this back to the way we do it above 
+    println!("I have identified the {}", species);
+    Ok(species) 
+}
+
+// 
+ fn poll_notion() -> impl Stream <Item = Result<String>> {
+    let sleep_time = Duration::from_secs(1);
+    try_stream! {
+    for _ in 0..100u64 {
+        let species = get_ellen_species().await?;
+        if species.len() != 0 {
+            yield species;
+        }
+        tokio::time::sleep(sleep_time).await;
+
+    }
+}
+
+
+
+
+
 
 }
