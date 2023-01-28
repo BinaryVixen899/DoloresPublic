@@ -217,7 +217,9 @@ async fn get_ellen_species() -> Result<String> {
         .await?
         .text()
         .await?;
+    println!("I have identified the {}", species);
     Ok(species) 
+    
 }
 
 // 
