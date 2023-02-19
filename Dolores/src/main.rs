@@ -6,7 +6,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 
+use anyhow::anyhow;
+use notion::NotionApi;
+use notion::ids::BlockId;
+use serde_json::json;
+use serenity::framework::standard::CommandError;
 use serenity::framework::standard::macros::hook;
+use serenity::model::channel;
+use serenity::model::guild;
+use serenity::model::prelude::ChannelId;
 //Serenity
 use serenity::prelude::*;
 use serenity::async_trait;
@@ -49,28 +57,30 @@ struct Commands;
 
 #[derive(Clone)]
 struct Ellen {
-    species: String,
+    species: Option<String>,
+    lastspecies: Option<String>
 }
 
 
-impl Ellen {
-    fn SetSpecies(&mut self, species: String) {
-        self.species = species
 
-    }
-    
-}
-
+// This is where we declare the typemapkeys that actually "transport" the values
 struct SnepContainer;
 
 impl TypeMapKey for SnepContainer {
-    type Value = Arc<Mutex<String>>;
+    type Value = Arc<Mutex<Option<String>>>;
+}
+
+struct LastSnepContainer;
+
+impl TypeMapKey for LastSnepContainer {
+    type Value = Arc<Mutex<Option<String>>>;
 }
 
 
 struct Handler;
 
 #[async_trait]
+///This command responds to certain phrases that might be said in the server
 impl EventHandler for Handler {
     async fn message(&self, ctx: Context, msg: Message) {
         let responsemessage = match msg.content.as_str() {
@@ -96,33 +106,97 @@ impl EventHandler for Handler {
         }
     }
 
+///Logic that executes when the "Ready" event is received. The most important thing here is the logic for posting my species
     async fn ready(&self, ctx: Context, ready: Ready) {
         // Hopefully doing this before the await will result in this always coming first  
         println!("{} is connected!", ready.user.name);
+        // watch_westworld(&ctx).await;
+        // TODO: handle this later 
+
+    
+        // Check to see if speciesupdateschannel exists, if it does not exist then create it 
+        // In order to do this we would first need to get all of the guild's channel ids 
+        let channels = ctx.http.get_channels(511743033117638656).await.expect("we were able to get the channels");
+        
+        let mut specieschannelid = None;
+        for k in channels {
+            if k.name == "speciesupdates" {
+                specieschannelid = Some(k.id.0)
+
+            }
+
+        }
+        if specieschannelid.is_none() {
+            panic!("There needs to be a species channel!")
+        }
+
+        let mut specieschannelid = specieschannelid.expect("A valid u64");
+
+
+        
+        // ctx.http.create_channel(511743033117638656, map, audit_log_reason)
+
         println!("Starting species loop");
-        // Okay so the idea is that we can 
-        // loop {
-        //     tokio::time::sleep(Duration::from_secs(60)).await;
-        //     ellen
-        // }
-        // put this in its own method 
-        // call with join 
-        // retrieve from context_clone_data 
-        watch_westworld(&ctx).await;
-        let species = {
-            let data_read = ctx.data.read().await;
-            data_read.get::<SnepContainer>().expect("Expected SnepContainer in TypeMap.").clone()
-        };
-        println!("Ellen is a {:?}", species.clone().as_ref())
+        
+        loop { 
+            // read in the data from the typemaps 
+            let species = {
+                let data_read = ctx.data.read().await;
+                data_read.get::<SnepContainer>().expect("Expected SnepContainer in TypeMap.").clone()
+            };
+            let lastspecies = {
+                let data_read = ctx.data.read().await;
+                data_read.get::<LastSnepContainer>().expect("Expected LastSnepContainer in TypeMap.").clone()
+            };
+           
+            // Compare the current values for the shared Ellen instance
+            // If the current species is the same as the last species skip to the next genereation of the loop
+            // Otherwise, print a message to the console with the new species
+            // This is extremely inefficient but we just want a working version 
+            if species.lock().await.as_ref().expect("a value") == lastspecies.lock().await.as_ref().expect("as value") {
+                continue
+            }
+            // If we get this far we need to update lastspecies so that we don't get stuck in a loop 
+            {
+                // Extract a mutable reference from lastspecies 
+                let mut lastspecies = lastspecies.lock().await;
+                let lastspecies = lastspecies.as_mut().expect("A valid value");
+
+                // Copy the value from species and put it into lastspecies 
+                let species = species.lock().await.clone();
+                let species = species.expect("This is a thing");
+                *lastspecies = species;
+            }
+           
+            // we might honesetly want to include a switch we can flick here and then flick back in the other logic, instead of relying on lastspecies to be that switch 
+            
+            {
+            let species =  species.lock().await.clone().expect("This is a thing");
+            let species = format!("{} {}", "Ellen is an", species);
+            
+            
+            let map = json!({
+                "content": species,
+                "tts": false,
+              });
+            ctx.http.send_message(specieschannelid, &map).await;
+            }
+            // For some reason this slept. Not exactly sure why.  
+            // tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+       
+
+        // Logic to send the message
+
         // let content = format!("{} is a", ready.user.name);
         // let response = MessageBuilder::new().push(content).build();
         // ctx.http.send_message(21, &serde_json::to_value(response).expect("valid")).await.expect("It worked!");
         
         
-        // Put it in a loop 
-        // TODO: Here
+        
     }
 
+    // Unused logic for automatically handling members joining 
     // async fn reaction_add(&self, _ctx: Context, _add_reaction: Reaction) {
     //     // When someone new joins, if an admin adds a check reaction bring them in and give them roles 
     //     // If an admin does an X reaction, kick them out 
@@ -146,41 +220,84 @@ impl EventHandler for Handler {
 
 #[tokio::main]
 async fn main() {
-    let mut ellen = Ellen {species: "Kitsune".to_string()};
+    // Initializing the global Ellen object 
+    let mut ellen = Ellen {species: {None}, lastspecies: {None}};
+    // Introducing the stream and pinning it, this is necessary 
     let stream = poll_notion();
     pin_mut!(stream);
    
+    // Create the Arc<Mutex> for ellen's species and seed it with initial data
     let species = Arc::new(Mutex::new(ellen.species));
-    {
-        let arcclone = species.clone();
-        let mut species = species.lock().await;
-        *species = "staerw".to_string();
-    }
+    let lastspecies = Arc::new(Mutex::new(ellen.lastspecies));
+   
+    
     
     
 
     let futureb =   async {
-        let arcclone = species.clone();
+        // While the stream is still giving us values 
         while let Some(item) = stream.next().await {
+            // Lock the species value so its safe
             let mut species = species.lock().await;
+            // Lock lastspecies so it's also safe
+            let mut lastspecies = lastspecies.lock().await;
             
             match item {
+                
                 Ok(animal) => {
-                    *species = animal;
+                    // we need to just store  
+                    // This is bad but it is late and i am tired 
+                    let animaltwo = animal.clone();
+                    // If this is the first time we are doing this species will be None
+                    // In this case, set the species and lastspecies to the same animal
+                    if species.is_none() {
+                        println!("Hi, I should only run once!");
+                        let animaltwo = animal.clone();
+                        *species = Some(animal);
+                        *lastspecies = Some(animaltwo);
+                        
+                    };
+                    
+                    // However, all subsequent times we go around 
+                    if species.is_some() {
+                        // Clone these two for Reasons 
+                        let animalthree = animaltwo.clone();
+                        let animalfour = animaltwo.clone();
+                        /* If the new item from the stream is the same as the current lastspecies,
+                           Then we know nothing has changed and we should continue the loop
+                         */ 
+                        
+                        if *lastspecies == Some(animaltwo) {
+                            continue;
+                        }
+                        // However, if it is different, then update current species 
+
+                        *species = Some(animalfour);
+                        
+                    }
+                    
+                    
+                    
                     
                 }
                 Err(_) => {
                     println!("Could not set species");
                 }
 
-            }
+            };
             
             
             //TODO: Send to channel! 
         }
 
     };
-    let futurea = discord(species.clone());
+    
+    // Clone a pointer 
+    let arcclone = species.clone();
+    let iamalsoanarcclone = lastspecies.clone();
+
+    // Pass the cloned pointers to Discord 
+    let futurea = discord(arcclone, iamalsoanarcclone);
 
     let run = join!(futurea, futureb);
     
@@ -188,7 +305,7 @@ async fn main() {
 
 }
 
-async fn discord(species: Arc<Mutex<String>>) {
+async fn discord(species: Arc<Mutex<Option<String>>>, lastspecies: Arc<Mutex<Option<String>>>) {
     dotenv::dotenv().expect("Teddy, have you seen the .env file?");
     // println!("Ellen is a {:?}", species);
     let botuserid = env::var("BOT_USER_ID").expect("An existing User ID");
@@ -204,7 +321,7 @@ async fn discord(species: Arc<Mutex<String>>) {
     // Get the token 
     let token = env::var("DISCORD_TOKEN").expect("A valid token");
     // Declare intents (these determine what events the bot will receive )
-    let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
+    let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT | GatewayIntents::GUILDS ;
     
     // Build the client 
     let mut client = Client::builder(token, intents)
@@ -215,9 +332,10 @@ async fn discord(species: Arc<Mutex<String>>) {
         // we need to continuously do this 
         
         {
+            // Transer the arc pointer so that it is accessible across all functions and callbacks
             let mut data = client.data.write().await;
-            
             data.insert::<SnepContainer>(species);
+            data.insert::<LastSnepContainer>(lastspecies);
 
             // so what I need to construct here is a mutex 
             // Hopefully I'll be able to read Ellen on a continually updated basis
@@ -225,6 +343,8 @@ async fn discord(species: Arc<Mutex<String>>) {
 
             // data.insert::<SnepContainer>(Arc::new(AtomicUsize::new(0))).expect();;
         }
+
+        
         
 
         if let Err(why) = client.start().await {
@@ -242,13 +362,36 @@ async fn discord(species: Arc<Mutex<String>>) {
 #[command]
 async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
     let client = reqwest::Client::new();
-    let species = client
+    let response = client
         .get("https://api.kitsune.gay/Species")
         .header(ACCEPT, "application/json")
         .send()
-        .await?
-        .text()
-        .await?;
+        .await;
+    let species = match response {
+        Ok(r) => {
+            let species = match r.error_for_status() {
+                Ok(r) => r.text().await.expect("A valid species string"),
+                
+                Err(e) => {
+                    eprintln!("We encountered an error, so we used Notion as a backup {}", e);
+                    get_ellen_species(Source::Notion).await.expect("We got a species")
+                    
+                }
+            
+
+            };
+           species
+
+
+        }
+        Err(e) => {
+            return Err(e.into())
+        }
+
+        
+    };
+    
+    
     let content = format!("Ellen is a {}", species);
     let response = MessageBuilder::new().push(content).build();
     msg.reply(ctx, response).await?;
@@ -256,6 +399,8 @@ async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
     Ok(())
     
 }
+
+
 
 #[command]
 async fn ellengender(ctx: &Context, msg: &Message) -> CommandResult {
@@ -293,6 +438,7 @@ async fn fronting(ctx: &Context, msg: &Message) -> CommandResult {
     Ok(())
 }
 
+
 #[hook]
 async fn before (ctx: &Context, msg: &Message, anything: &str) -> bool {
     // pass Ellen in and then 
@@ -308,28 +454,65 @@ async fn watch_westworld(ctx: &Context) {
 
 }
 
-async fn get_ellen_species() -> Result<String> {
-    let client = reqwest::Client::new();
-    let species = client
-        .get("https://api.kitsune.gay/Species")
-        .header(ACCEPT, "application/json")
-        .send()
-        .await?
-        .text()
-        .await?;
-    println!("I have identified the {}", species);
-    Ok(species) 
+enum Source {
+    Notion,
+    ApiKitsuneGay,    
+}
+
+async fn get_ellen_species(src: Source) -> Result<String> {
+    match src { 
+        Notion => {
+            let api_token = "NotionApiToken";
+            let api_token = dotenv::var(api_token).unwrap();
+            let notion  = NotionApi::new(api_token).expect("We were able to authenticate to Notion");
+            let speciesblockid = <BlockId as std::str::FromStr>::from_str("3aa4b832776a4e76bb23cf7dcc80df38").expect("We got a valid BlockID!");
+            
+            let speciesblock = notion.get_block_children(speciesblockid).await.expect("We were able to get the block children");
+            let test = speciesblock.results;
+
+            let species = match test[1].clone() {
+                notion::models::Block::Heading1 {heading_1, common} => {
+                  let text = heading_1.rich_text[0].clone();
+                  text.plain_text().to_string()
+                },
+                _ => {
+                    "Kitsune".to_string()
+                }
+                };
+            
+            Ok(species)
+
+            
+
+        },
+
+        ApiKitsuneGay => {
+            let client = reqwest::Client::new();
+            let species = client
+            .get("https://api.kitsune.gay/Species")
+            .header(ACCEPT, "application/json")
+            .send()
+            .await?
+            .text()
+            .await?;
+        println!("I have identified the {}", species);
+        return Ok(species)
+        }
+    }
+    
+    
     
 }
 
+
 // 
  fn poll_notion() -> impl Stream <Item = Result<String>> {
-    let sleep_time = Duration::from_secs(50);
+    let sleep_time = Duration::from_secs(30);
     //TODO: Find a way to return an error here 
     try_stream! {
         // TODO: Test if this will stop, if yes make it a loop
-        for _ in 0..5u64 {
-            let species = get_ellen_species().await?;
+        loop {
+            let species = get_ellen_species(Source::Notion).await?;
             //TODO: check for valid species
             if species.len() != 0 {
                 yield species;
