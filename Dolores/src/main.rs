@@ -1,16 +1,17 @@
-//Standard
+use std::cell::RefCell;
 use std::env;
+use std::string;
+//Standard
+use std::sync::Arc;
 use std::time::Duration;
 
 
+use serenity::framework::standard::macros::hook;
 //Serenity
 use serenity::prelude::*;
 use serenity::async_trait;
-use serenity::model::prelude::ChannelId;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
-use serenity::model::prelude::Member;
-use serenity::model::prelude::Reaction;
 use serenity::model::prelude::UserId;
 use serenity::model::gateway::Activity;
 use serenity::framework::standard::macros::{command, group};
@@ -24,16 +25,48 @@ use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
 use async_stream::try_stream;
 
+
 //Misc
 use anyhow::Result;
 // use anyhow::Ok;
 
 use reqwest::header::ACCEPT;
 
-
 #[group]
 #[commands(ellengender, ellenspecies, fronting)]
-struct Ellen;
+struct Commands;
+
+// struct SnepContainer;
+
+// impl TypeMapKey for SnepContainer {
+//     type Value = Arc<Mutex<SnepContainer>>;
+// }
+// Arc is Atomically Reference Counted. Atomic as in safe to access concurrently, reference counted as in will be automatically deleted when not need. Mutex means only one thread can access it at once. RefCell provides interior mutability (meaning you can modify the contents, whereas normally global values are read-only)
+// What is my problem? 
+// I need to be able to access the value of Ellen.species from anywhere in discord
+// I cannot just pass a reference because I also need to continuously modify it 
+// I need a mutex
+
+#[derive(Clone)]
+struct Ellen {
+    species: String,
+}
+
+
+impl Ellen {
+    fn SetSpecies(&mut self, species: String) {
+        self.species = species
+
+    }
+    
+}
+
+struct SnepContainer;
+
+impl TypeMapKey for SnepContainer {
+    type Value = Arc<Mutex<String>>;
+}
+
 
 struct Handler;
 
@@ -54,7 +87,7 @@ impl EventHandler for Handler {
         // Pass is used in order to not do anything if Dolores doesn't recognize anything
         if responsemessage != String::from("Pass") {
             let response = MessageBuilder::new().push(responsemessage).build();
-
+            
             if let Err(why) = msg.channel_id.say(&ctx.http, response).await {
                 println!(
                     "The damn pony express failed to deliver the message! Goshdarnit!: {:?}", why
@@ -66,7 +99,28 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         // Hopefully doing this before the await will result in this always coming first  
         println!("{} is connected!", ready.user.name);
+        println!("Starting species loop");
+        // Okay so the idea is that we can 
+        // loop {
+        //     tokio::time::sleep(Duration::from_secs(60)).await;
+        //     ellen
+        // }
+        // put this in its own method 
+        // call with join 
+        // retrieve from context_clone_data 
         watch_westworld(&ctx).await;
+        let species = {
+            let data_read = ctx.data.read().await;
+            data_read.get::<SnepContainer>().expect("Expected SnepContainer in TypeMap.").clone()
+        };
+        println!("Ellen is a {:?}", species.clone().as_ref())
+        // let content = format!("{} is a", ready.user.name);
+        // let response = MessageBuilder::new().push(content).build();
+        // ctx.http.send_message(21, &serde_json::to_value(response).expect("valid")).await.expect("It worked!");
+        
+        
+        // Put it in a loop 
+        // TODO: Here
     }
 
     // async fn reaction_add(&self, _ctx: Context, _add_reaction: Reaction) {
@@ -92,27 +146,51 @@ impl EventHandler for Handler {
 
 #[tokio::main]
 async fn main() {
+    let mut ellen = Ellen {species: "Kitsune".to_string()};
     let stream = poll_notion();
     pin_mut!(stream);
-    let mut futurea = discord();
+   
+    let species = Arc::new(Mutex::new(ellen.species));
+    {
+        let arcclone = species.clone();
+        let mut species = species.lock().await;
+        *species = "staerw".to_string();
+    }
+    
+    
+
     let futureb =   async {
+        let arcclone = species.clone();
         while let Some(item) = stream.next().await {
-            print!("Ellen is a {:?} ", item);
+            let mut species = species.lock().await;
+            
+            match item {
+                Ok(animal) => {
+                    *species = animal;
+                    
+                }
+                Err(_) => {
+                    println!("Could not set species");
+                }
+
+            }
+            
+            
             //TODO: Send to channel! 
         }
 
     };
-    
-    
+    let futurea = discord(species.clone());
 
     let run = join!(futurea, futureb);
     
 
 
 }
-async fn discord() {
-    dotenv::dotenv().expect("Teddy, have you seen the .env file?");
 
+async fn discord(species: Arc<Mutex<String>>) {
+    dotenv::dotenv().expect("Teddy, have you seen the .env file?");
+    // println!("Ellen is a {:?}", species);
     let botuserid = env::var("BOT_USER_ID").expect("An existing User ID");
     if let Ok(buid) = botuserid.parse::<u64>() {
         let framework = StandardFramework::new().configure(|c| {
@@ -121,19 +199,33 @@ async fn discord() {
             .on_mention(Some(UserId(buid)))
             .prefix("!")
     })
-    .group(&ELLEN_GROUP);
+    .group(&COMMANDS_GROUP);
 
     // Get the token 
     let token = env::var("DISCORD_TOKEN").expect("A valid token");
     // Declare intents (these determine what events the bot will receive )
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
-
+    
     // Build the client 
     let mut client = Client::builder(token, intents)
         .event_handler(Handler)
         .framework(framework)
         .await
         .expect("And it all started with, Wyatt");
+        // we need to continuously do this 
+        
+        {
+            let mut data = client.data.write().await;
+            
+            data.insert::<SnepContainer>(species);
+
+            // so what I need to construct here is a mutex 
+            // Hopefully I'll be able to read Ellen on a continually updated basis
+            // If not I'll have to rethink the structure of Ellen 
+
+            // data.insert::<SnepContainer>(Arc::new(AtomicUsize::new(0))).expect();;
+        }
+        
 
         if let Err(why) = client.start().await {
             println!(
@@ -199,6 +291,14 @@ async fn fronting(ctx: &Context, msg: &Message) -> CommandResult {
     msg.reply(ctx, response).await?;
 
     Ok(())
+}
+
+#[hook]
+async fn before (ctx: &Context, msg: &Message, anything: &str) -> bool {
+    // pass Ellen in and then 
+    true
+    
+    
 }
 
 async fn watch_westworld(ctx: &Context) {
