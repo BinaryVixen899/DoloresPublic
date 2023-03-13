@@ -7,12 +7,10 @@ use std::time::Duration;
 use notion::ids::BlockId;
 use notion::NotionApi;
 
-
 //Serenity
 use serenity::async_trait;
 use serenity::framework::standard::macros::{command, group};
 use serenity::framework::standard::{CommandResult, StandardFramework};
-use serenity::json::JsonMap;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Activity;
 use serenity::model::gateway::Ready;
@@ -29,33 +27,32 @@ use tokio::join;
 
 //Misc
 use anyhow::Result;
-use serde_json::json;
 use reqwest::header::ACCEPT;
+use serde_json::json;
 
 #[group]
 #[commands(ellengender, ellenspecies, /*fronting*/)]
 struct Commands;
 
-
-/* 
-Arc is Atomically Reference Counted. 
-Atomic as in safe to access concurrently, reference counted as in will be automatically deleted when not need. 
-Mutex means only one thread can access it at once. 
+/*
+Arc is Atomically Reference Counted.
+Atomic as in safe to access concurrently, reference counted as in will be automatically deleted when not need.
+Mutex means only one thread can access it at once.
 RefCell provides interior mutability (meaning you can modify the contents, whereas normally global values are read-only)
 Mutex also provides interior mutability.
- */ 
+ */
 
 // Although no longer relevant, the below notes are kept for sentimental reasons
-/* 
+/*
 What is my problem?
 I need to be able to access the value of Ellen.species from anywhere in discord
 I cannot just pass a reference because I also need to continuously modify it
 I need a mutex
  */
-// Because this is my first extremely complex application that I'm able to show publicly, I decided to annotate all await statements, arcs, etc. 
+// Because this is my first extremely complex application that I'm able to show publicly, I decided to annotate all await statements, arcs, etc.
 #[derive(Clone)]
 struct Ellen {
-    species: Option<String>, // when the program has just started up it is possible for both of these values to be None 
+    species: Option<String>, // when the program has just started up it is possible for both of these values to be None
 }
 
 // This is where we declare the typemapkeys that actually "transport" the values
@@ -65,8 +62,6 @@ impl TypeMapKey for SnepContainer {
     type Value = Arc<Mutex<Option<String>>>;
 }
 
-
-
 struct Handler;
 
 #[async_trait]
@@ -74,26 +69,21 @@ struct Handler;
 impl EventHandler for Handler {
     async fn message(&self, ctx: Context, msg: Message) {
         let responsemessage = match msg.content.as_str() {
-            "What does this look like to you" => {
-                String::from("Doesn't look like much of anything to me.")
-            }
-            "Mow" => String::from("Father, I think we're having Kieran for dinner tonight"),
-            "Skunk Noises" => String::from("No, she is too precious to eat"),
-            "Chirp" => String::from("Father, I think we're having Kauko for dinner!"),
-            "Yip Yap!" => String::from("Father, I think I've found dinner. And it's coyote."),
-            _ => String::from("Pass"),
+            "What does this look like to you" => "Doesn't look like much of anything to me.",
+            "Mow" => "Father, I think we're having Kieran for dinner tonight",
+            "Skunk Noises" => "No, she is too precious to eat",
+            "Chirp" => "Father, I think we're having Kauko for dinner!",
+            "Yip Yap!" => "Father, I think I've found dinner. And it's coyote.",
+            _ => return, // If Dolores doesn't recognize the prompt, don't do anything
         };
 
-        // Pass is used in order to not do anything if Dolores doesn't recognize anything
-        if responsemessage != String::from("Pass") {
-            let response = MessageBuilder::new().push(responsemessage).build();
+        let response = MessageBuilder::new().push(responsemessage).build();
 
-            if let Err(why) = msg.channel_id.say(&ctx.http, response).await {
-                println!(
-                    "The damn pony express failed to deliver the message! Goshdarnit!: {:?}",
-                    why
-                )
-            }
+        if let Err(why) = msg.channel_id.say(&ctx.http, response).await {
+            println!(
+                "The damn pony express failed to deliver the message! Goshdarnit!: {:?}",
+                why
+            )
         }
     }
 
@@ -101,102 +91,85 @@ impl EventHandler for Handler {
     /// Because
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
-        // My assumption is that once the await concludes we will continue to execute code 
+        // My assumption is that once the await concludes we will continue to execute code
         // The problem with awaiting a future in your current function is that once you've done that you are suspending execution until the future is complete
-        // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever. 
+        // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever.
         watch_westworld(&ctx).await;
 
         // Check to see if speciesupdateschannel exists, if it does not exist then create it
-        // Get all of the guilds channel ids 
+        // Get all of the guilds channel ids
         let channels = ctx
             .http
             .get_channels(511743033117638656)
             .await // stop executing the function until we get the results back, which is very useful
-            // If we don't have the permissions we need or can't connect to the API we should crash 
+            // If we don't have the permissions we need or can't connect to the API we should crash
             .expect("we were able to get the channels");
 
         // Set the specieschannelid so that we can update it once we find it
-        let mut specieschannelid = None;
-        for k in channels {
-            if k.name == "speciesupdates" {
-                specieschannelid = Some(k.id.0)
-            }
-        }
-         
-        
-        let mut map =  JsonMap::new();
+        let channel = channels
+            .into_iter()
+            .find(|channel| channel.name == "speciesupdates");
+        let specieschannelid = channel.map(|k| k.id.0);
+
         if specieschannelid.is_none() {
-            let json = json!(
-                "speciesupdates"
-            );
-            map.insert("name".to_string(), json);
-            ctx.http.create_channel(511743033117638656, &map, None).await; //stop executing the function until the channel create finishes again useful
-            //TODO: If the request fails let's crash and tell someone to create it manually 
+            let map = serde_json::from_value(json!(
+                {
+                    "name": "speciesupdates"
+                }
+            ))
+            .unwrap();
+            ctx.http
+                .create_channel(511743033117638656, &map, None)
+                .await; //stop executing the function until the channel create finishes again useful
+                        //TODO: If the request fails let's crash and tell someone to create it manually
         };
-        
-        
 
         let specieschannelid = specieschannelid.expect("A valid u64");
-        // TODO: RECOVER PRE TOMASH VERSION. MIGHT  NOT BE POSSIBLE DUE TO THE WAY DISCORD DOES THIS 
+        // TODO: RECOVER PRE TOMASH VERSION. MIGHT  NOT BE POSSIBLE DUE TO THE WAY DISCORD DOES THIS
         println!("Starting species loop");
 
         // read in the data from the typemaps
         let species = {
-            let data_read = ctx.data.read().await; 
+            let data_read = ctx.data.read().await;
             //nobody can update the species while i'm reading it
-            // hypothetically, this could deadlock 
+            // hypothetically, this could deadlock
             data_read
                 .get::<SnepContainer>()
                 .expect("Expected SnepContainer in TypeMap.")
                 .clone()
         };
 
-        // Create this so we can update lastspecies
-        let mut lastspecies:Option<String> = None;
-        loop { 
-                {
-                    // Get the current value of species so we can stick it in lastspecies
-                    let species = species.lock().await;
-                    lastspecies = species.clone();
-                }
+        loop {
+            let lastspecies = species.lock().await.clone();
+
             // may have to add a sleep in here to give time for the value to change inbetween acquiring the second lock
-            loop { 
-                let species = species.lock().await;                
+            let species = loop {
+                let species = species.lock().await;
                 if lastspecies.as_ref() != species.as_ref() {
-                    // First we wait to get a lock to the Option<String>
-                    // After we have a lock to the option string, we get a reference to its value 
-                    // This allows us to use that reference when we do formatting 
-                    // The reason why this works but the above has to clone is because as_ref() takes it out of the option WHILE KEEPING THE ORIGINAL 
-                    // as_mut DESTROYS THE ORIGINAL 
-                    println!("species is {:?}", species);
-                    let species = species.as_ref().expect("Species contained a value");
-                    let species = format!("{} {}", "Ellen is an", species);
-
-                    let map = json!({
-                    "content": species,
-                    "tts": false,
-                    });
-                    
-                    match ctx.http.send_message(specieschannelid, &map).await
-                    {
-                        Ok(_) => {
-                            ();
-                            break
-                        }
-
-                        Err(_) => { 
-                            panic!("We couldn't create a specieschannel");
-                        }
-
-                    } 
-                    
+                    break species;
                 }
-                
+            };
+            // First we wait to get a lock to the Option<String>
+            // After we have a lock to the option string, we get a reference to its value
+            // This allows us to use that reference when we do formatting
+            // The reason why this works but the above has to clone is because as_ref() takes it out of the option WHILE KEEPING THE ORIGINAL
+            // as_mut DESTROYS THE ORIGINAL
+            println!("species is {:?}", species);
+            let species = species.as_ref().expect("Species contained a value");
+            let species = format!("{} {}", "Ellen is an", species);
 
-            }
+            let map = json!({
+                "content": species,
+                "tts": false,
+            });
 
-            }
-
+            ctx.http
+                .send_message(specieschannelid, &map)
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("We couldn't create a specieschannel");
+                });
+        }
     }
 
     // Unused logic for automatically handling members joining
@@ -224,66 +197,50 @@ impl EventHandler for Handler {
 #[tokio::main]
 async fn main() {
     // Initializing the global Ellen object
-    let ellen = Ellen {
-        species: { None },
-    };
-    /*  Introducing the stream and pinning it mutably, 
+    let ellen = Ellen { species: { None } };
+    /*  Introducing the stream and pinning it mutably,
      this is necessary in order to use next below because next takes a mutual reference NOT ownership
     */
     let stream = poll_notion();
     pin_mut!(stream);
 
     // Create the Arc<Mutex> for ellen's species
-    /* It's important to note that we are using Tokio mutexes here. 
-    Tokio mutexes have a lock that is asynchronous, yay! 
+    /* It's important to note that we are using Tokio mutexes here.
+    Tokio mutexes have a lock that is asynchronous, yay!
     the lock guard produced by lock is also designed to be held across await points so that's cool too
     */
 
-    /* 
-    The reason we use Arc here is a bit different. We use Arc because it's thread safe and we are ultimately do go across thread boundaries 
+    /*
+    The reason we use Arc here is a bit different. We use Arc because it's thread safe and we are ultimately do go across thread boundaries
     */
     let species = Arc::new(Mutex::new(ellen.species));
 
-    // assigning the future to a variable allows us to basically make a function 
+    // assigning the future to a variable allows us to basically make a function
     let futureb = async {
         // While the stream is still giving us values
         while let Some(item) = stream.next().await {
+            let Ok(transformation) = item else {
+                println!("Could not set species");
+                continue
+            };
+
             // Lock species and lastspecies so its safe to modify them
             let mut species = species.lock().await;
 
-            match item {
-                Ok(transformation) => {
-                    // If this is the first time we are doing this species will be None
-                    // In this case, set the species and lastspecies to the same animal
-                    // We then have to continue the loop, probably because Rust doesn't know that NOTHING will be modifying 
-                    // the value of species inbetween is_none and is_some
-                    if species.is_none() {
-                        println!("Hi, I should only run once!");
-                        *species = Some(transformation);
-                        continue
-                    };
+            // If this is the first time we are doing this species will be None
+            // In this case, set the species and lastspecies to the same animal
+            if let Some(ref mut species) = *species {
+                /* If the new item from the stream is the same as the current lastspecies,
+                    Then we know nothing has changed and we should continue the loop
+                */
 
-                    if species.is_some() {
-                        /* If the new item from the stream is the same as the current lastspecies,
-                          Then we know nothing has changed and we should continue the loop
-                        */
-
-                        if species.as_ref().expect("Species has a value") == &transformation {
-                            continue
-                        }
-                        else { 
-                            *species = Some(transformation);
-                        }
-                        // However, if it is different, then update current species
-
-                        
-                    }
+                if *species != transformation {
+                    *species = transformation;
                 }
-                Err(_) => {
-                    println!("Could not set species");
-                }
+            } else {
+                println!("Hi, I should only run once!");
+                *species = Some(transformation);
             };
-
         }
     };
 
@@ -300,48 +257,45 @@ async fn discord(species: Arc<Mutex<Option<String>>>) {
     dotenv::dotenv().expect("Teddy, have you seen the .env file?");
     let botuserid = env::var("BOT_USER_ID").expect("An existing User ID");
 
-    if let Ok(buid) = botuserid.parse::<u64>() {
-        let framework = StandardFramework::new()
-            .configure(|c| {
-                c.allow_dm(true)
-                    .case_insensitivity(true)
-                    .on_mention(Some(UserId(buid)))
-                    .prefix("!")
-            })
-            .group(&COMMANDS_GROUP);
+    let Ok(buid) = botuserid.parse::<u64>() else { return };
+    let framework = StandardFramework::new()
+        .configure(|c| {
+            c.allow_dm(true)
+                .case_insensitivity(true)
+                .on_mention(Some(UserId(buid)))
+                .prefix("!")
+        })
+        .group(&COMMANDS_GROUP);
 
-        // Get the token
-        let token = env::var("DISCORD_TOKEN").expect("A valid token");
-        // Declare intents (these determine what events the bot will receive )
-        let intents = GatewayIntents::non_privileged()
-            | GatewayIntents::MESSAGE_CONTENT
-            | GatewayIntents::GUILDS;
+    // Get the token
+    let token = env::var("DISCORD_TOKEN").expect("A valid token");
+    // Declare intents (these determine what events the bot will receive )
+    let intents =
+        GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT | GatewayIntents::GUILDS;
 
-        // Build the client
-        let mut client = Client::builder(token, intents)
-            .event_handler(Handler)
-            .framework(framework)
-            .await
-            .expect("And it all started with, Wyatt");
+    // Build the client
+    let mut client = Client::builder(token, intents)
+        .event_handler(Handler)
+        .framework(framework)
+        .await
+        .expect("And it all started with, Wyatt");
 
-        // Get a RW lock for a short period of time so that we can shove the arc pointers into their proper containers
-        {
-            // Transfer the arc pointer so that it is accessible across all functions and callbacks
-            let mut data = client.data.write().await;
-            data.insert::<SnepContainer>(species);
+    // Get a RW lock for a short period of time so that we can shove the arc pointers into their proper containers
+    {
+        // Transfer the arc pointer so that it is accessible across all functions and callbacks
+        let mut data = client.data.write().await;
+        data.insert::<SnepContainer>(species);
+    }
 
-        }
-
-        if let Err(why) = client.start().await {
-            println!(
-                "We failed, we failed to start listening for events: {:?}",
-                why
-            )
-        }
+    if let Err(why) = client.start().await {
+        println!(
+            "We failed, we failed to start listening for events: {:?}",
+            why
+        )
     }
 }
 
-// Discord Commands Section 
+// Discord Commands Section
 
 #[command]
 async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
@@ -350,25 +304,19 @@ async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
         .get("https://api.kitsune.gay/Species")
         .header(ACCEPT, "application/json")
         .send()
-        .await;
-    let species = match response {
-        Ok(r) => {
-            let species = match r.error_for_status() {
-                Ok(r) => r.text().await.expect("A valid species string"),
+        .await?;
+    let species = match response.error_for_status() {
+        Ok(r) => r.text().await.expect("A valid species string"),
 
-                Err(e) => {
-                    eprintln!(
-                        "We encountered an error, so we used Notion as a backup {}",
-                        e
-                    );
-                    get_ellen_species(Source::Notion)
-                        .await
-                        .expect("We got a species")
-                }
-            };
-            species
+        Err(e) => {
+            eprintln!(
+                "We encountered an error, so we used Notion as a backup {}",
+                e
+            );
+            get_ellen_species(Source::Notion)
+                .await
+                .expect("We got a species")
         }
-        Err(e) => return Err(e.into()),
     };
 
     let content = format!("Ellen is a {}", species);
@@ -380,36 +328,33 @@ async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
 
 #[command]
 async fn ellengender(ctx: &Context, msg: &Message) -> CommandResult {
-            let api_token = "NotionApiToken";
-            let api_token = dotenv::var(api_token).unwrap();
-            let notion = NotionApi::new(api_token).expect("We were able to authenticate to Notion");
-            let genderblockid =
-                <BlockId as std::str::FromStr>::from_str("3aa4b832776a4e76bb23cf7dcc80df38")
-                    .expect("We got a valid BlockID!");
+    let api_token = "NotionApiToken";
+    let api_token = dotenv::var(api_token).unwrap();
+    let notion = NotionApi::new(api_token).expect("We were able to authenticate to Notion");
+    let genderblockid =
+        <BlockId as std::str::FromStr>::from_str("3aa4b832776a4e76bb23cf7dcc80df38")
+            .expect("We got a valid BlockID!");
 
-            let genderblock = notion
-                .get_block_children(genderblockid)
-                .await
-                .expect("We were able to get the block children");
-            let genderblock = genderblock.results;
+    let genderblock = notion
+        .get_block_children(genderblockid)
+        .await
+        .expect("We were able to get the block children");
+    let genderblock = genderblock.results;
 
-            let gender = match genderblock[3].clone() {
-                notion::models::Block::Heading1 { heading_1, common:_ } => {
-                    let text = heading_1.rich_text[0].clone();
-                    text.plain_text().to_string()
-                }
-                _ => "She/Her".to_string(),
-            };
+    let gender = match &genderblock[3] {
+        notion::models::Block::Heading1 { heading_1, .. } => {
+            let text = &heading_1.rich_text[0];
+            text.plain_text()
+        }
+        _ => "She/Her",
+    };
 
-            
-            let content = format!("The current pronouns are {}", gender);
-            let response = MessageBuilder::new().push(content).build();
-            msg.reply(ctx, response).await?;
+    let content = format!("The current pronouns are {}", gender);
+    let response = MessageBuilder::new().push(content).build();
+    msg.reply(ctx, response).await?;
 
     Ok(())
 }
-    
-
 
 // #[command]
 // async fn fronting(ctx: &Context, msg: &Message) -> CommandResult {
@@ -430,7 +375,7 @@ async fn ellengender(ctx: &Context, msg: &Message) -> CommandResult {
 //     Ok(())
 // }
 
-// Non Discord Functions 
+// Non Discord Functions
 
 async fn watch_westworld(ctx: &Context) {
     ctx.set_activity(Activity::watching("Westworld")).await;
@@ -458,15 +403,13 @@ async fn get_ellen_species(src: Source) -> Result<String> {
                 .expect("We were able to get the block children");
             let test = speciesblock.results;
 
-            let species = match test[1].clone() {
-                notion::models::Block::Heading1 { heading_1, common:_ } => {
-                    let text = heading_1.rich_text[0].clone();
-                    text.plain_text().to_string()
-                }
-                _ => "Kitsune".to_string(),
+            let species = if let notion::models::Block::Heading1 { heading_1, .. } = &test[1] {
+                heading_1.rich_text[0].plain_text()
+            } else {
+                "Kitsune"
             };
 
-            Ok(species)
+            Ok(species.to_string())
         }
 
         Source::ApiKitsuneGay => {
@@ -479,13 +422,13 @@ async fn get_ellen_species(src: Source) -> Result<String> {
                 .text()
                 .await?;
             println!("I have identified the {}", species);
-            return Ok(species);
+            Ok(species)
         }
     }
 }
 
-/// Poll notion every 30 seconds and get the result 
-/// 
+/// Poll notion every 30 seconds and get the result
+///
 fn poll_notion() -> impl Stream<Item = Result<String>> {
     let sleep_time = Duration::from_secs(30);
     //TODO: Find a way to return an error here
@@ -494,7 +437,7 @@ fn poll_notion() -> impl Stream<Item = Result<String>> {
         loop {
             let species = get_ellen_species(Source::Notion).await?;
             //TODO: check for valid species
-            if species.len() != 0 {
+            if !species.is_empty() {
                 yield species;
             }
             tokio::time::sleep(sleep_time).await;
