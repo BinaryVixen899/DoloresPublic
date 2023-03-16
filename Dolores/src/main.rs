@@ -170,7 +170,7 @@ impl EventHandler for Handler {
                     // as_mut DESTROYS THE ORIGINAL 
                     println!("species is {:?}", species);
                     let species = species.as_ref().expect("Species contained a value");
-                    let species = format!("{} {}", "Ellen is an", species);
+                    let species = format!("{} {}", "Ellen is a", species);
 
                     let map = json!({
                     "content": species,
