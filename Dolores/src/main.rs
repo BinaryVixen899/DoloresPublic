@@ -421,49 +421,125 @@ enum Source {
     ApiKitsuneGay,
 }
 
-async fn get_ellen_species(src: Source) -> Result<String> {
+async fn get_ellen_species(src: Option<Source>) -> Result<String> {
     match src {
-        Source::Notion => {
-            let api_token = "NotionApiToken";
-            let api_token = dotenv::var(api_token).unwrap();
-            let notion = NotionApi::new(api_token).expect("We were able to authenticate to Notion");
-            let speciesblockid =
-                <BlockId as std::str::FromStr>::from_str("3aa4b832776a4e76bb23cf7dcc80df38")
-                    .expect("We got a valid BlockID!");
+        Some(Source) => {
+            match src.expect("Contained a source!") {
+                Source::Notion => {
+                            let api_token = "NotionApiToken";
+                            let api_token = dotenv::var(api_token).unwrap();
+                            let notion = NotionApi::new(api_token).expect("We were able to authenticate to Notion");
+                            let speciesblockid =
+                                <BlockId as std::str::FromStr>::from_str("3aa4b832776a4e76bb23cf7dcc80df38")
+                                    .expect("We got a valid BlockID!");
+                
+                            let speciesblock = notion
+                                .get_block_children(speciesblockid)
+                                .await
+                                .expect("We were able to get the block children");
+                            let test = speciesblock.results;
+                
+                            let species = match test[1].clone() {
+                                notion::models::Block::Heading1 {
+                                    heading_1,
+                                    common: _,
+                                } => {
+                                    let text = heading_1.rich_text[0].clone();
+                                    text.plain_text().to_string()
+                                }
+                                _ => "Kitsune".to_string(),
+                            };
+                
+                            Ok(species)
+                        }
+                
+                        Source::ApiKitsuneGay => {
+                            let client = reqwest::Client::new();
+                            let species = client
+                                .get("https://api.kitsune.gay/Species")
+                                .header(ACCEPT, "application/json")
+                                .send()
+                                .await?
+                                .text()
+                                .await?;
+                            println!("I have identified the {}", species);
+                            return Ok(species);
+                        }
+            }
 
-            let speciesblock = notion
-                .get_block_children(speciesblockid)
-                .await
-                .expect("We were able to get the block children");
-            let test = speciesblock.results;
+        },
 
-            let species = match test[1].clone() {
-                notion::models::Block::Heading1 {
-                    heading_1,
-                    common: _,
-                } => {
-                    let text = heading_1.rich_text[0].clone();
-                    text.plain_text().to_string()
+        None => {
+            let FastlyHealthy = DoHealthCheck().await;
+            let result = match FastlyHealthy {
+                True => {
+                    todo!();
+
                 }
-                _ => "Kitsune".to_string(),
+
+                False => {
+                    todo!();
+
+                }
             };
 
-            Ok(species)
-        }
+            match result {
 
-        Source::ApiKitsuneGay => {
-            let client = reqwest::Client::new();
-            let species = client
-                .get("https://api.kitsune.gay/Species")
-                .header(ACCEPT, "application/json")
-                .send()
-                .await?
-                .text()
-                .await?;
-            println!("I have identified the {}", species);
-            return Ok(species);
+            }
+            // Use a head request because it's much faster 
+
+
         }
+        
+
     }
+    
+    // match src {
+    //     Source::Notion => {
+    //         let api_token = "NotionApiToken";
+    //         let api_token = dotenv::var(api_token).unwrap();
+    //         let notion = NotionApi::new(api_token).expect("We were able to authenticate to Notion");
+    //         let speciesblockid =
+    //             <BlockId as std::str::FromStr>::from_str("3aa4b832776a4e76bb23cf7dcc80df38")
+    //                 .expect("We got a valid BlockID!");
+
+    //         let speciesblock = notion
+    //             .get_block_children(speciesblockid)
+    //             .await
+    //             .expect("We were able to get the block children");
+    //         let test = speciesblock.results;
+
+    //         let species = match test[1].clone() {
+    //             notion::models::Block::Heading1 {
+    //                 heading_1,
+    //                 common: _,
+    //             } => {
+    //                 let text = heading_1.rich_text[0].clone();
+    //                 text.plain_text().to_string()
+    //             }
+    //             _ => "Kitsune".to_string(),
+    //         };
+
+    //         Ok(species)
+    //     }
+
+    //     Source::ApiKitsuneGay => {
+    //         let client = reqwest::Client::new();
+    //         let species = client
+    //             .get("https://api.kitsune.gay/Species")
+    //             .header(ACCEPT, "application/json")
+    //             .send()
+    //             .await?
+    //             .text()
+    //             .await?;
+    //         println!("I have identified the {}", species);
+    //         return Ok(species);
+    //     }
+    // }
+}
+
+async fn DoHealthCheck() {
+    todo!();
 }
 
 /// Poll notion every 30 seconds and get the result
@@ -474,7 +550,7 @@ fn poll() -> impl Stream<Item = Result<String>> {
     try_stream! {
         // TODO: Test if this will stop, if yes make it a loop
         loop {
-            let species = get_ellen_species(Source::ApiKitsuneGay).await?;
+            let species = get_ellen_species(None).await?;
             //TODO: check for valid species
             if species.len() != 0 {
                 yield species;
