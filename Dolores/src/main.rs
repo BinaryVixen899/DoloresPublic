@@ -7,7 +7,6 @@ use std::time::Duration;
 use notion::ids::BlockId;
 use notion::NotionApi;
 
-
 //Serenity
 use serenity::async_trait;
 use serenity::framework::standard::macros::{command, group};
@@ -29,33 +28,32 @@ use tokio::join;
 
 //Misc
 use anyhow::Result;
-use serde_json::json;
 use reqwest::header::ACCEPT;
+use serde_json::json;
 
 #[group]
 #[commands(ellengender, ellenspecies, /*fronting*/)]
 struct Commands;
 
-
-/* 
-Arc is Atomically Reference Counted. 
-Atomic as in safe to access concurrently, reference counted as in will be automatically deleted when not need. 
-Mutex means only one thread can access it at once. 
+/*
+Arc is Atomically Reference Counted.
+Atomic as in safe to access concurrently, reference counted as in will be automatically deleted when not need.
+Mutex means only one thread can access it at once.
 RefCell provides interior mutability (meaning you can modify the contents, whereas normally global values are read-only)
 Mutex also provides interior mutability.
- */ 
+ */
 
 // Although no longer relevant, the below notes are kept for sentimental reasons
-/* 
+/*
 What is my problem?
 I need to be able to access the value of Ellen.species from anywhere in discord
 I cannot just pass a reference because I also need to continuously modify it
 I need a mutex
  */
-// Because this is my first extremely complex application that I'm able to show publicly, I decided to annotate all await statements, arcs, etc. 
+// Because this is my first extremely complex application that I'm able to show publicly, I decided to annotate all await statements, arcs, etc.
 #[derive(Clone)]
 struct Ellen {
-    species: Option<String>, // when the program has just started up it is possible for both of these values to be None 
+    species: Option<String>, // when the program has just started up it is possible for both of these values to be None
 }
 
 // This is where we declare the typemapkeys that actually "transport" the values
@@ -64,8 +62,6 @@ struct SnepContainer;
 impl TypeMapKey for SnepContainer {
     type Value = Arc<Mutex<Option<String>>>;
 }
-
-
 
 struct Handler;
 
@@ -101,18 +97,18 @@ impl EventHandler for Handler {
     /// Because
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
-        // My assumption is that once the await concludes we will continue to execute code 
+        // My assumption is that once the await concludes we will continue to execute code
         // The problem with awaiting a future in your current function is that once you've done that you are suspending execution until the future is complete
-        // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever. 
+        // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever.
         watch_westworld(&ctx).await;
 
         // Check to see if speciesupdateschannel exists, if it does not exist then create it
-        // Get all of the guilds channel ids 
+        // Get all of the guilds channel ids
         let channels = ctx
             .http
             .get_channels(511743033117638656)
             .await // stop executing the function until we get the results back, which is very useful
-            // If we don't have the permissions we need or can't connect to the API we should crash 
+            // If we don't have the permissions we need or can't connect to the API we should crash
             .expect("we were able to get the channels");
 
         // Set the specieschannelid so that we can update it once we find it
@@ -122,29 +118,26 @@ impl EventHandler for Handler {
                 specieschannelid = Some(k.id.0)
             }
         }
-         
-        
-        let mut map =  JsonMap::new();
+
+        let mut map = JsonMap::new();
         if specieschannelid.is_none() {
-            let json = json!(
-                "speciesupdates"
-            );
+            let json = json!("speciesupdates");
             map.insert("name".to_string(), json);
-            ctx.http.create_channel(511743033117638656, &map, None).await; //stop executing the function until the channel create finishes again useful
-            //TODO: If the request fails let's crash and tell someone to create it manually 
+            ctx.http
+                .create_channel(511743033117638656, &map, None)
+                .await; //stop executing the function until the channel create finishes again useful
+                        //TODO: If the request fails let's crash and tell someone to create it manually
         };
-        
-        
 
         let specieschannelid = specieschannelid.expect("A valid u64");
-        // TODO: RECOVER PRE TOMASH VERSION. MIGHT  NOT BE POSSIBLE DUE TO THE WAY DISCORD DOES THIS 
+        // TODO: RECOVER PRE TOMASH VERSION. MIGHT  NOT BE POSSIBLE DUE TO THE WAY DISCORD DOES THIS
         println!("Starting species loop");
 
         // read in the data from the typemaps
         let species = {
-            let data_read = ctx.data.read().await; 
+            let data_read = ctx.data.read().await;
             //nobody can update the species while i'm reading it
-            // hypothetically, this could deadlock 
+            // hypothetically, this could deadlock
             data_read
                 .get::<SnepContainer>()
                 .expect("Expected SnepContainer in TypeMap.")
@@ -152,22 +145,22 @@ impl EventHandler for Handler {
         };
 
         // Create this so we can update lastspecies
-        let mut lastspecies:Option<String> = None;
-        loop { 
-                {
-                    // Get the current value of species so we can stick it in lastspecies
-                    let species = species.lock().await;
-                    lastspecies = species.clone();
-                }
+        let mut lastspecies: Option<String> = None;
+        loop {
+            {
+                // Get the current value of species so we can stick it in lastspecies
+                let species = species.lock().await;
+                lastspecies = species.clone();
+            }
             // may have to add a sleep in here to give time for the value to change inbetween acquiring the second lock
-            loop { 
-                let species = species.lock().await;                
+            loop {
+                let species = species.lock().await;
                 if lastspecies.as_ref() != species.as_ref() {
                     // First we wait to get a lock to the Option<String>
-                    // After we have a lock to the option string, we get a reference to its value 
-                    // This allows us to use that reference when we do formatting 
-                    // The reason why this works but the above has to clone is because as_ref() takes it out of the option WHILE KEEPING THE ORIGINAL 
-                    // as_mut DESTROYS THE ORIGINAL 
+                    // After we have a lock to the option string, we get a reference to its value
+                    // This allows us to use that reference when we do formatting
+                    // The reason why this works but the above has to clone is because as_ref() takes it out of the option WHILE KEEPING THE ORIGINAL
+                    // as_mut DESTROYS THE ORIGINAL
                     println!("species is {:?}", species);
                     let species = species.as_ref().expect("Species contained a value");
                     let species = format!("{} {}", "Ellen is a", species);
@@ -176,27 +169,20 @@ impl EventHandler for Handler {
                     "content": species,
                     "tts": false,
                     });
-                    
-                    match ctx.http.send_message(specieschannelid, &map).await
-                    {
+
+                    match ctx.http.send_message(specieschannelid, &map).await {
                         Ok(_) => {
                             ();
-                            break
+                            break;
                         }
 
-                        Err(_) => { 
+                        Err(_) => {
                             panic!("We couldn't create a specieschannel");
                         }
-
-                    } 
-                    
+                    }
                 }
-                
-
             }
-
-            }
-
+        }
     }
 
     // Unused logic for automatically handling members joining
@@ -224,27 +210,25 @@ impl EventHandler for Handler {
 #[tokio::main]
 async fn main() {
     // Initializing the global Ellen object
-    let ellen = Ellen {
-        species: { None },
-    };
-    /*  Introducing the stream and pinning it mutably, 
+    let ellen = Ellen { species: { None } };
+    /*  Introducing the stream and pinning it mutably,
      this is necessary in order to use next below because next takes a mutual reference NOT ownership
     */
-    let stream = poll_notion();
+    let stream = poll();
     pin_mut!(stream);
 
     // Create the Arc<Mutex> for ellen's species
-    /* It's important to note that we are using Tokio mutexes here. 
-    Tokio mutexes have a lock that is asynchronous, yay! 
+    /* It's important to note that we are using Tokio mutexes here.
+    Tokio mutexes have a lock that is asynchronous, yay!
     the lock guard produced by lock is also designed to be held across await points so that's cool too
     */
 
-    /* 
-    The reason we use Arc here is a bit different. We use Arc because it's thread safe and we are ultimately do go across thread boundaries 
+    /*
+    The reason we use Arc here is a bit different. We use Arc because it's thread safe and we are ultimately do go across thread boundaries
     */
     let species = Arc::new(Mutex::new(ellen.species));
 
-    // assigning the future to a variable allows us to basically make a function 
+    // assigning the future to a variable allows us to basically make a function
     let futureb = async {
         // While the stream is still giving us values
         while let Some(item) = stream.next().await {
@@ -255,12 +239,12 @@ async fn main() {
                 Ok(transformation) => {
                     // If this is the first time we are doing this species will be None
                     // In this case, set the species and lastspecies to the same animal
-                    // We then have to continue the loop, probably because Rust doesn't know that NOTHING will be modifying 
+                    // We then have to continue the loop, probably because Rust doesn't know that NOTHING will be modifying
                     // the value of species inbetween is_none and is_some
                     if species.is_none() {
                         println!("Hi, I should only run once!");
                         *species = Some(transformation);
-                        continue
+                        continue;
                     };
 
                     if species.is_some() {
@@ -269,21 +253,17 @@ async fn main() {
                         */
 
                         if species.as_ref().expect("Species has a value") == &transformation {
-                            continue
-                        }
-                        else { 
+                            continue;
+                        } else {
                             *species = Some(transformation);
                         }
                         // However, if it is different, then update current species
-
-                        
                     }
                 }
                 Err(_) => {
                     println!("Could not set species");
                 }
             };
-
         }
     };
 
@@ -329,7 +309,6 @@ async fn discord(species: Arc<Mutex<Option<String>>>) {
             // Transfer the arc pointer so that it is accessible across all functions and callbacks
             let mut data = client.data.write().await;
             data.insert::<SnepContainer>(species);
-
         }
 
         if let Err(why) = client.start().await {
@@ -341,7 +320,7 @@ async fn discord(species: Arc<Mutex<Option<String>>>) {
     }
 }
 
-// Discord Commands Section 
+// Discord Commands Section
 
 #[command]
 async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
@@ -380,36 +359,36 @@ async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
 
 #[command]
 async fn ellengender(ctx: &Context, msg: &Message) -> CommandResult {
-            let api_token = "NotionApiToken";
-            let api_token = dotenv::var(api_token).unwrap();
-            let notion = NotionApi::new(api_token).expect("We were able to authenticate to Notion");
-            let genderblockid =
-                <BlockId as std::str::FromStr>::from_str("3aa4b832776a4e76bb23cf7dcc80df38")
-                    .expect("We got a valid BlockID!");
+    let api_token = "NotionApiToken";
+    let api_token = dotenv::var(api_token).unwrap();
+    let notion = NotionApi::new(api_token).expect("We were able to authenticate to Notion");
+    let genderblockid =
+        <BlockId as std::str::FromStr>::from_str("3aa4b832776a4e76bb23cf7dcc80df38")
+            .expect("We got a valid BlockID!");
 
-            let genderblock = notion
-                .get_block_children(genderblockid)
-                .await
-                .expect("We were able to get the block children");
-            let genderblock = genderblock.results;
+    let genderblock = notion
+        .get_block_children(genderblockid)
+        .await
+        .expect("We were able to get the block children");
+    let genderblock = genderblock.results;
 
-            let gender = match genderblock[3].clone() {
-                notion::models::Block::Heading1 { heading_1, common:_ } => {
-                    let text = heading_1.rich_text[0].clone();
-                    text.plain_text().to_string()
-                }
-                _ => "She/Her".to_string(),
-            };
+    let gender = match genderblock[3].clone() {
+        notion::models::Block::Heading1 {
+            heading_1,
+            common: _,
+        } => {
+            let text = heading_1.rich_text[0].clone();
+            text.plain_text().to_string()
+        }
+        _ => "She/Her".to_string(),
+    };
 
-            
-            let content = format!("The current pronouns are {}", gender);
-            let response = MessageBuilder::new().push(content).build();
-            msg.reply(ctx, response).await?;
+    let content = format!("The current pronouns are {}", gender);
+    let response = MessageBuilder::new().push(content).build();
+    msg.reply(ctx, response).await?;
 
     Ok(())
 }
-    
-
 
 // #[command]
 // async fn fronting(ctx: &Context, msg: &Message) -> CommandResult {
@@ -430,7 +409,7 @@ async fn ellengender(ctx: &Context, msg: &Message) -> CommandResult {
 //     Ok(())
 // }
 
-// Non Discord Functions 
+// Non Discord Functions
 
 async fn watch_westworld(ctx: &Context) {
     ctx.set_activity(Activity::watching("Westworld")).await;
@@ -459,7 +438,10 @@ async fn get_ellen_species(src: Source) -> Result<String> {
             let test = speciesblock.results;
 
             let species = match test[1].clone() {
-                notion::models::Block::Heading1 { heading_1, common:_ } => {
+                notion::models::Block::Heading1 {
+                    heading_1,
+                    common: _,
+                } => {
                     let text = heading_1.rich_text[0].clone();
                     text.plain_text().to_string()
                 }
@@ -484,15 +466,15 @@ async fn get_ellen_species(src: Source) -> Result<String> {
     }
 }
 
-/// Poll notion every 30 seconds and get the result 
-/// 
-fn poll_notion() -> impl Stream<Item = Result<String>> {
+/// Poll notion every 30 seconds and get the result
+///
+fn poll() -> impl Stream<Item = Result<String>> {
     let sleep_time = Duration::from_secs(30);
     //TODO: Find a way to return an error here
     try_stream! {
         // TODO: Test if this will stop, if yes make it a loop
         loop {
-            let species = get_ellen_species(Source::Notion).await?;
+            let species = get_ellen_species(Source::ApiKitsuneGay).await?;
             //TODO: check for valid species
             if species.len() != 0 {
                 yield species;
