@@ -529,4 +529,3 @@ fn poll_notion() -> impl Stream<Item = Result<String>> {
     }
 }
 
-fn dev() {}
