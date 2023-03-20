@@ -105,7 +105,7 @@ impl EventHandler for Handler {
         let mut specieschannelid = None;
         // Check to see if speciesupdateschannel exists, if it does not exist then create it
         // Get all of the guilds channel ids
-        let specieschannelid = if cfg!(feature = "dev") {
+        let specieschannelid = {
             let channels = ctx
                 .http
                 .get_channels(511743033117638656)
@@ -113,21 +113,15 @@ impl EventHandler for Handler {
                 // If we don't have the permissions we need or can't connect to the API we should crash
                 .expect("we were able to get the channels");
             for k in channels {
+                if cfg!(feature = "dev") {
                 if k.name == "bottest" {
                     specieschannelid = Some(k.id.0)
                 }
-            }
-            specieschannelid
-        } else {
-            let channels = ctx
-                .http
-                .get_channels(511743033117638656)
-                .await // stop executing the function until we get the results back, which is very useful
-                // If we don't have the permissions we need or can't connect to the API we should crash
-                .expect("we were able to get the channels");
-            for k in channels {
-                if k.name == "speciesupdates" {
-                    specieschannelid = Some(k.id.0)
+                }
+                else {
+                    if k.name == "speciesupdates" {
+                        specieschannelid = Some(k.id.0)
+                    }
                 }
             }
             specieschannelid
@@ -135,7 +129,14 @@ impl EventHandler for Handler {
 
         let mut map = JsonMap::new();
         if specieschannelid.is_none() {
-            let json = json!("speciesupdates");
+            let json = if cfg!(feature = "dev") 
+            { 
+                json!("bottest")
+            }
+            else {
+                json!("speciesupdates")
+            };
+
             map.insert("name".to_string(), json);
             ctx.http
                 .create_channel(511743033117638656, &map, None)
@@ -293,15 +294,15 @@ async fn main() {
 async fn discord(species: Arc<Mutex<Option<String>>>) {
     dotenv::dotenv().expect("Teddy, have you seen the .env file?");
     if cfg!(feature = "dev") {
-        println!("the stack overflow post was right!");
+        println!("DEVLORES ACTIVATED!");
     }
-    let mut client = if cfg!(feature = "dev") {
-        let botuserid = env::var("BOT_USER_ID").expect("An existing User ID");
-        let buid = botuserid
+    let mut client =  {
+    let botuserid = env::var("BOT_USER_ID").expect("An existing User ID");
+    let buid = botuserid
             .parse::<u64>()
             .expect("We were able to parse the Bot User ID");
-
-        let framework = StandardFramework::new()
+    let framework = if cfg!(feature = "dev")  {
+    let framework = StandardFramework::new()
             .configure(|c| {
                 c.allow_dm(false)
                     .case_insensitivity(true)
@@ -311,25 +312,10 @@ async fn discord(species: Arc<Mutex<Option<String>>>) {
                 // Interesting that it wouldn't allow me to do a normal into here, I wonder why?
             })
             .group(&COMMANDS_GROUP);
-
-        let token = env::var("DISCORD_TOKEN").expect("A valid token");
-
-        let intents = GatewayIntents::non_privileged()
-            | GatewayIntents::MESSAGE_CONTENT
-            | GatewayIntents::GUILDS;
-
-        let client = Client::builder(token, intents)
-            .event_handler(Handler)
-            .framework(framework)
-            .await
-            .expect("And it all started with, Wyatt");
-        client
-    } else {
-        let botuserid = env::var("BOT_USER_ID").expect("An existing User ID");
-        let buid = botuserid
-            .parse::<u64>()
-            .expect("We were able to parse the Bot User ID");
-        let framework = StandardFramework::new()
+            framework
+        }
+        else {
+            let framework = StandardFramework::new()
             .configure(|c| {
                 c.allow_dm(true)
                     .case_insensitivity(true)
@@ -337,24 +323,23 @@ async fn discord(species: Arc<Mutex<Option<String>>>) {
                     .prefix("!")
             })
             .group(&COMMANDS_GROUP);
+            framework
+        };
 
-        // Get the token
-        let token = env::var("DISCORD_TOKEN").expect("A valid token");
+    let token = env::var("DISCORD_TOKEN").expect("A valid token");
 
-        //TODO: If in Dev Mode, do Dev Mode Things
-
-        // Declare intents (these determine what events the bot will receive )
-        let intents = GatewayIntents::non_privileged()
+    let intents = GatewayIntents::non_privileged()
             | GatewayIntents::MESSAGE_CONTENT
             | GatewayIntents::GUILDS;
 
-        // Build the client
-        let client = Client::builder(token, intents)
+     let client = Client::builder(token, intents)
             .event_handler(Handler)
             .framework(framework)
             .await
             .expect("And it all started with, Wyatt");
         client
+        // Build the client
+        
     };
     {
         // Transfer the arc pointer so that it is accessible across all functions and callbacks
