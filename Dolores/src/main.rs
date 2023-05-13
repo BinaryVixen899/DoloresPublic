@@ -1,6 +1,8 @@
 use core::time;
+use std::env::VarError;
 //Standard
 use std::fmt::Debug;
+use std::num::ParseIntError;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{env, fmt};
@@ -101,10 +103,27 @@ impl EventHandler for Handler {
     /// Because
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
+        let watchingcheckinterval = std::env::var("watchingcheckinterval");
+        println!(
+            "Setting watchingcheckinterval to {:?}",
+            watchingcheckinterval.clone()
+        );
+        let wct = watchingcheckinterval.and_then(|x| {
+            Ok(x.parse::<u64>()
+                .expect("We were able to parse the checkinterval value into a u64"))
+        });
+        match wct {
+            Ok(d) => {
+                println!("Watching check interval set!");
+                watch_westworld(&ctx, Some(Duration::from_secs(d)))
+            }
+            Err(_) => watch_westworld(&ctx, None),
+        }
+        .await;
+
         // My assumption is that once the await concludes we will continue to execute code
         // The problem with awaiting a future in your current function is that once you've done that you are suspending execution until the future is complete
         // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever.
-        watch_westworld(&ctx, None).await;
 
         let mut specieschannelid = None;
         // Check to see if speciesupdateschannel exists, if it does not exist then create it
