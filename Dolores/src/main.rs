@@ -1,12 +1,15 @@
+use core::time;
 //Standard
-use std::env;
+use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use std::{env, fmt};
 
 // Notion
 use notion::ids::BlockId;
 use notion::NotionApi;
 
+use notion::models::DateTime;
 //Serenity
 use serenity::async_trait;
 use serenity::framework::standard::macros::{command, group};
@@ -28,6 +31,7 @@ use tokio::join;
 
 //Misc
 use anyhow::Result;
+use chrono::prelude::*;
 use reqwest::header::ACCEPT;
 use serde_json::json;
 
@@ -100,7 +104,7 @@ impl EventHandler for Handler {
         // My assumption is that once the await concludes we will continue to execute code
         // The problem with awaiting a future in your current function is that once you've done that you are suspending execution until the future is complete
         // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever.
-        watch_westworld(&ctx).await;
+        watch_westworld(&ctx, None).await;
 
         let mut specieschannelid = None;
         // Check to see if speciesupdateschannel exists, if it does not exist then create it
@@ -114,11 +118,10 @@ impl EventHandler for Handler {
                 .expect("we were able to get the channels");
             for k in channels {
                 if cfg!(feature = "dev") {
-                if k.name == "bottest" {
-                    specieschannelid = Some(k.id.0)
-                }
-                }
-                else {
+                    if k.name == "bottest" {
+                        specieschannelid = Some(k.id.0)
+                    }
+                } else {
                     if k.name == "speciesupdates" {
                         specieschannelid = Some(k.id.0)
                     }
@@ -129,11 +132,9 @@ impl EventHandler for Handler {
 
         let mut map = JsonMap::new();
         if specieschannelid.is_none() {
-            let json = if cfg!(feature = "dev") 
-            { 
+            let json = if cfg!(feature = "dev") {
                 json!("bottest")
-            }
-            else {
+            } else {
                 json!("speciesupdates")
             };
 
@@ -296,50 +297,48 @@ async fn discord(species: Arc<Mutex<Option<String>>>) {
     if cfg!(feature = "dev") {
         println!("DEVLORES ACTIVATED!");
     }
-    let mut client =  {
-    let botuserid = env::var("BOT_USER_ID").expect("An existing User ID");
-    let buid = botuserid
+    let mut client = {
+        let botuserid = env::var("BOT_USER_ID").expect("An existing User ID");
+        let buid = botuserid
             .parse::<u64>()
             .expect("We were able to parse the Bot User ID");
-    let framework = if cfg!(feature = "dev")  {
-    let framework = StandardFramework::new()
-            .configure(|c| {
-                c.allow_dm(false)
-                    .case_insensitivity(true)
-                    .on_mention(Some(UserId(buid)))
-                    .prefix("#")
-                    .allowed_channels(vec![ChannelId(811020462322483210)].into_iter().collect())
-                // Interesting that it wouldn't allow me to do a normal into here, I wonder why?
-            })
-            .group(&COMMANDS_GROUP);
-            framework
-        }
-        else {
+        let framework = if cfg!(feature = "dev") {
             let framework = StandardFramework::new()
-            .configure(|c| {
-                c.allow_dm(true)
-                    .case_insensitivity(true)
-                    .on_mention(Some(UserId(buid)))
-                    .prefix("!")
-            })
-            .group(&COMMANDS_GROUP);
+                .configure(|c| {
+                    c.allow_dm(false)
+                        .case_insensitivity(true)
+                        .on_mention(Some(UserId(buid)))
+                        .prefix("#")
+                        .allowed_channels(vec![ChannelId(811020462322483210)].into_iter().collect())
+                    // Interesting that it wouldn't allow me to do a normal into here, I wonder why?
+                })
+                .group(&COMMANDS_GROUP);
+            framework
+        } else {
+            let framework = StandardFramework::new()
+                .configure(|c| {
+                    c.allow_dm(true)
+                        .case_insensitivity(true)
+                        .on_mention(Some(UserId(buid)))
+                        .prefix("!")
+                })
+                .group(&COMMANDS_GROUP);
             framework
         };
 
-    let token = env::var("DISCORD_TOKEN").expect("A valid token");
+        let token = env::var("DISCORD_TOKEN").expect("A valid token");
 
-    let intents = GatewayIntents::non_privileged()
+        let intents = GatewayIntents::non_privileged()
             | GatewayIntents::MESSAGE_CONTENT
             | GatewayIntents::GUILDS;
 
-     let client = Client::builder(token, intents)
+        let client = Client::builder(token, intents)
             .event_handler(Handler)
             .framework(framework)
             .await
             .expect("And it all started with, Wyatt");
         client
         // Build the client
-        
     };
     {
         // Transfer the arc pointer so that it is accessible across all functions and callbacks
@@ -448,17 +447,58 @@ async fn ellengender(ctx: &Context, msg: &Message) -> CommandResult {
 
 // Non Discord Functions
 
-async fn watch_westworld(ctx: &Context) {
+async fn watch_westworld(ctx: &Context, fetch_duration: Option<Duration>) {
     //TODO: We need a dev mode off switch
-    if cfg!(feature = "dev") {
-        ctx.set_activity(Activity::watching("Westworld (1973)"))
-            .await;
 
-        // TODO: Change other attributes here to distuinguish devlores
-    } else {
-        ctx.set_activity(Activity::watching("Westworld")).await;
+    #[derive(Debug)]
+    enum Schedule {
+        Monday(String),
+        Tuesday(String),
+        Wednesday(String),
+        Thursday(String),
+        Friday(String),
     }
-    // TODO: Make what Dolores activity is change every day
+
+    let MondayTV = Schedule::Monday("Westworld".to_string());
+    let TuesdayTV = Schedule::Tuesday("Westworld Season 1".to_string());
+    let WednesdayTV = Schedule::Wednesday("Westworld Season 2".to_string());
+    let ThursdayTV = Schedule::Thursday("Westworld Season 3".to_string());
+    let FridayTV = Schedule::Friday("Westworld Season 4".to_string());
+
+    impl fmt::Display for Schedule {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            self.to_string();
+            write!(f, "{:?}", self)
+            // or, alternatively:
+            // fmt::Debug::fmt(self, f)
+        }
+    }
+    loop {
+        let now = chrono::offset::Local::now();
+        let dayoftheweek = now.date_naive().weekday();
+        let show = match dayoftheweek.number_from_monday() {
+            1 => MondayTV.to_string(),
+            2 => TuesdayTV.to_string(),
+            3 => WednesdayTV.to_string(),
+            4 => ThursdayTV.to_string(),
+            5 => FridayTV.to_string(),
+            _ => "Westworld".to_string(),
+        };
+
+        if cfg!(feature = "dev") {
+            ctx.set_activity(Activity::watching("Westworld (1973)"))
+                .await;
+
+            // TODO: Change other attributes here to distuinguish devlores
+        } else {
+            ctx.set_activity(Activity::watching(show)).await;
+        }
+        // TODO: Make what Dolores activity is change every day
+        match fetch_duration {
+            Some(d) => tokio::time::sleep(Duration::from_secs(d.as_secs())).await,
+            None => tokio::time::sleep(Duration::from_secs(86400)).await,
+        }
+    }
 }
 
 enum Source {
@@ -467,6 +507,7 @@ enum Source {
 }
 
 async fn get_ellen_species(src: Source) -> Result<String> {
+    // TODO: Refactor
     match src {
         Source::Notion => {
             let api_token = "NotionApiToken";
@@ -480,6 +521,7 @@ async fn get_ellen_species(src: Source) -> Result<String> {
                 .get_block_children(speciesblockid)
                 .await
                 .expect("We were able to get the block children");
+
             let test = speciesblock.results;
 
             let species = match test[1].clone() {
@@ -529,3 +571,38 @@ fn poll_notion() -> impl Stream<Item = Result<String>> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+
+    use core::time;
+
+    use super::*;
+    async fn can_poll_notion() {
+        // Tests whether we can poll notion for valid input and if there is at least 30 seconds between
+        // make sleeptime conigurable
+        // TODO: Come back to this and actually make it do what we want
+        let past = Instant::now();
+        let teststream = poll_notion();
+        pin_mut!(teststream);
+        assert!(
+            teststream
+                .any(|i| async move { i.unwrap().is_empty() == false })
+                .await
+        );
+        let now = Instant::now();
+        assert!(now - past >= std::time::Duration::from_secs(30));
+    }
+
+    async fn gets_ellen_species() {
+        // TODO: After refactor test for failure
+        let species = get_ellen_species(Source::Notion);
+        assert_eq!(species.await.is_ok(), true);
+
+        let species = get_ellen_species(Source::ApiKitsuneGay);
+        assert_eq!(species.await.is_ok(), true);
+    }
+
+    async fn watches_westworld() {
+        //TODO: Basic test just needs to check that it changes depending on the day
+    }
+}
