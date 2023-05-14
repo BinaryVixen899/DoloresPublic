@@ -1,11 +1,12 @@
 use core::time;
+use std::collections::HashMap;
 use std::env::VarError;
 //Standard
 use std::fmt::Debug;
 use std::num::ParseIntError;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::{env, fmt};
+use std::{env, fmt, string};
 
 // Notion
 use notion::ids::BlockId;
@@ -115,9 +116,9 @@ impl EventHandler for Handler {
         match wct {
             Ok(d) => {
                 println!("Watching check interval set!");
-                watch_westworld(&ctx, Some(Duration::from_secs(d)))
+                watch(&ctx, Some(Duration::from_secs(d)))
             }
-            Err(_) => watch_westworld(&ctx, None),
+            Err(_) => watch(&ctx, None),
         }
         .await;
 
@@ -466,47 +467,26 @@ async fn ellengender(ctx: &Context, msg: &Message) -> CommandResult {
 
 // Non Discord Functions
 
-async fn watch_westworld(ctx: &Context, fetch_duration: Option<Duration>) {
+async fn watch(ctx: &Context, fetch_duration: Option<Duration>) {
     //TODO: We need a dev mode off switch
 
-    #[derive(Debug)]
-    enum Schedule {
-        Monday(String),
-        Tuesday(String),
-        Wednesday(String),
-        Thursday(String),
-        Friday(String),
-    }
-
-    let MondayTV = Schedule::Monday("Westworld".to_string());
-    let TuesdayTV = Schedule::Tuesday("Westworld Season 1".to_string());
-    let WednesdayTV = Schedule::Wednesday("Westworld Season 2".to_string());
-    let ThursdayTV = Schedule::Thursday("Westworld Season 3".to_string());
-    let FridayTV = Schedule::Friday("Westworld Season 4".to_string());
-
-    impl fmt::Display for Schedule {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            self.to_string();
-            write!(f, "{:?}", self)
-            // or, alternatively:
-            // fmt::Debug::fmt(self, f)
+    let tvschedule = {
+        Schedule::TV {
+            Monday: "Westworld".to_string(),
+            Tuesday: "Westworld Season 1".to_string(),
+            Wednesday: "Westworld Season 2".to_string(),
+            Thursday: "Westworld Season 3".to_string(),
+            Friday: "Westworld Season 4".to_string(),
+            Default: Some("Westworld".to_string()),
         }
-    }
-    loop {
-        let now = chrono::offset::Local::now();
-        let dayoftheweek = now.date_naive().weekday();
-        let show = match dayoftheweek.number_from_monday() {
-            1 => MondayTV.to_string(),
-            2 => TuesdayTV.to_string(),
-            3 => WednesdayTV.to_string(),
-            4 => ThursdayTV.to_string(),
-            5 => FridayTV.to_string(),
-            _ => "Westworld".to_string(),
-        };
+    };
 
+    loop {
+        let show = watch_athing(tvschedule.clone());
         if cfg!(feature = "dev") {
             ctx.set_activity(Activity::watching("Westworld (1973)"))
                 .await;
+            tokio::time::sleep(Duration::from_secs(60)).await;
 
             // TODO: Change other attributes here to distuinguish devlores
         } else {
@@ -589,6 +569,62 @@ fn poll_notion() -> impl Stream<Item = Result<String>> {
         }
     }
 }
+#[derive(Debug, Clone)]
+enum Schedule {
+    TV {
+        Monday: String,
+        Tuesday: String,
+        Wednesday: String,
+        Thursday: String,
+        Friday: String,
+        Default: Option<String>,
+    },
+    Nothing {
+        Message: String,
+    },
+}
+
+fn watch_athing(schedule: Schedule) -> String {
+    impl fmt::Display for Schedule {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            self.to_string();
+            write!(f, "{:?}", self)
+            // or, alternatively:
+            // fmt::Debug::fmt(self, f)
+        }
+    }
+    let now: DateTime<Local> = chrono::offset::Local::now();
+    let dayoftheweek = now.date_naive().weekday();
+
+    let show = match schedule {
+        Schedule::TV {
+            Monday,
+            Tuesday,
+            Wednesday,
+            Thursday,
+            Friday,
+            Default,
+        } => {
+            let mut StringDefault: String;
+            if Default.is_none() {
+                StringDefault = "Westworld".to_string()
+            } else {
+                StringDefault = Default.clone().expect("The provided Default is a string")
+            }
+            let show = match dayoftheweek.number_from_monday() {
+                1 => Monday,
+                2 => Tuesday,
+                3 => Wednesday,
+                4 => Thursday,
+                5 => Friday,
+                _ => StringDefault,
+            };
+            show
+        }
+        Schedule::Nothing { Message } => Message,
+    };
+    show
+}
 
 #[cfg(test)]
 mod tests {
@@ -621,7 +657,48 @@ mod tests {
         assert_eq!(species.await.is_ok(), true);
     }
 
-    async fn watches_westworld() {
+    async fn watches() {
+        let MondayTV = "Static Shock".to_string();
+        let TuesdayTV = "Pokémon".to_string();
+        let WednesdayTV = "MLP Friendship is Magic".to_string();
+        let ThursdayTV = "The Borrowers".to_string();
+        let FridayTV = "Sherlock Holmes in the 22nd Century".to_string();
+        let SpookyTV = Some("Candle Cove".to_string());
+
+        let tvschedule = {
+            Schedule::TV {
+                Monday: MondayTV.clone(),
+                Tuesday: TuesdayTV.clone(),
+                Wednesday: WednesdayTV.clone(),
+                Thursday: ThursdayTV.clone(),
+                Friday: FridayTV.clone(),
+                Default: SpookyTV.clone(),
+            }
+        };
+        let now: DateTime<Local> = chrono::offset::Local::now();
+        let dayoftheweek = now.date_naive().weekday();
+        let show = watch_athing(tvschedule);
+        match dayoftheweek {
+            Weekday::Mon => {
+                assert_eq!(show, MondayTV)
+            }
+            Weekday::Tue => {
+                assert_eq!(show, TuesdayTV)
+            }
+            Weekday::Wed => {
+                assert_eq!(show, WednesdayTV)
+            }
+            Weekday::Thu => {
+                assert_eq!(show, ThursdayTV)
+            }
+            Weekday::Fri => {
+                assert_eq!(show, FridayTV)
+            }
+            _ => {
+                assert_eq!(show, SpookyTV.unwrap())
+            }
+        }
+
         //TODO: Basic test just needs to check that it changes depending on the day
     }
 }
