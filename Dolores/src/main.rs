@@ -335,25 +335,33 @@ async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
         .header(ACCEPT, "application/json")
         .send()
         .await;
-    let species = match response {
-        Ok(r) => {
-            let species = match r.error_for_status() {
-                Ok(r) => r.text().await.expect("A valid species string"),
-
-                Err(e) => {
-                    eprintln!(
-                        "We encountered an error, so we used Notion as a backup {}",
-                        e
-                    );
-                    get_ellen_species(Source::Notion)
-                        .await
-                        .expect("We got a species")
-                }
-            };
-            species
+    let species = get_ellen_species(Source::Notion).await;
+    let species = match species {
+        Ok(spcs) => spcs,
+        Err(e) => {
+            eprintln!("We encountered an error while fetching from Notion: {}", e);
+            "Kitsune".to_string()
         }
-        Err(e) => return Err(e.into()),
     };
+    // let species = match response {
+    //     Ok(r) => {
+    //         let species = match r.error_for_status() {
+    //             Ok(r) => r.text().await.expect("A valid species string"),
+
+    //             Err(e) => {
+    //                 eprintln!(
+    //                     "We encountered an error, so we used Notion as a backup {}",
+    //                     e
+    //                 );
+    //                 get_ellen_species(Source::Notion)
+    //                     .await
+    //                     .expect("We got a species")
+    //             }
+    //         };
+    //         species
+    //     }
+    //     Err(e) => return Err(e.into()),
+    // };
 
     let content = format!("Ellen is a {}", species);
     let response = MessageBuilder::new().push(content).build();
