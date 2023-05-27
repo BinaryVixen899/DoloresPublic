@@ -163,15 +163,47 @@ impl EventHandler for Handler {
                     // as_mut DESTROYS THE ORIGINAL
                     println!("species is {:?}", species);
                     let species = species.as_ref().expect("Species contained a value");
-                    let spcs;
-                    if species.contains("Skunk") {
-                        spcs = format!("Ellen is a {}. {}", species, "Fucking Odists...");
-                    } else {
-                        spcs = format!("{} {}", "Ellen is a", species);
-                    }
+                    let lowercasespecies = species.to_lowercase();
+                    let wittycomment = match lowercasespecies.as_str() {
+                        "kitsune"| "狐" | "きつね" => {
+                            Some("Someone is feeling foxy...")
+                        },
+
+                        "snow leopard" | "snep" => {
+                            Some("Ugh. I can hear the mowing already...")
+                        },
+                        "skunk" => {
+                            Some("Fucking Odists...")
+                        },
+                        "fennec" => {
+                            Some("Just so you know, your ears are so big I could use them to get TV. I want you to know that.")
+                        },
+                        "arcanine" => {
+                            Some("I was expecting Growlithe. If you're going to foil my expectations, at least be a shiny!")
+                        },
+                        "hellhound" => {
+                            Some("Now aren't we edgy...")
+                        },
+                        "catbat" => {
+                            Some("Craving some quality upside down time?")
+                        },
+                        "wolf" => {
+                            Some("Awoooooooooooo. Ahem.")
+                        },
+                        _=> {None}
+                    };
+
+                    let content = match wittycomment {
+                        Some(cmt) => {
+                            format!("Ellen is a {}.\n{}", species, cmt)
+                        }
+                        None => {
+                            format!("{} {}", "Ellen is a", species)
+                        }
+                    };
 
                     let map = json!({
-                    "content": spcs,
+                    "content": content,
                     "tts": false,
                     });
 
