@@ -9,8 +9,10 @@ use notion::NotionApi;
 
 //Serenity
 use serenity::async_trait;
+use serenity::builder::EditProfile;
 use serenity::framework::standard::macros::{command, group};
 use serenity::framework::standard::{CommandResult, StandardFramework};
+use serenity::http::CacheHttp;
 use serenity::json::JsonMap;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Activity;
@@ -71,12 +73,15 @@ impl EventHandler for Handler {
     async fn message(&self, ctx: Context, msg: Message) {
         let responsemessage = match msg.content.as_str() {
             "What does this look like to you" => {
-                String::from("Doesn't look like much of anything to me.")
+                String::from("Do I look like Dolores to you, Dr. Anders? ")
             }
-            "Mow" => String::from("Father, I think we're having Kieran for dinner tonight"),
-            "Skunk Noises" => String::from("No, she is too precious to eat"),
-            "Chirp" => String::from("Father, I think we're having Kauko for dinner!"),
-            "Yip Yap!" => String::from("Father, I think I've found dinner. And it's coyote."),
+            "Praem!" if msg.author.id == UserId::from(257998930258821130) => {
+                String::from("Do I look like Praem to you, Evelyn?")
+            }
+            "Mow" => String::from("Mowwwwwwwwww~"), 
+            "Skunk Noises" => String::from("Ellie told me the most fascinating thing the other day about the etymology of that word."),
+            "Chirp" => String::from("Gotta go fast, as they say."),
+            "Yip Yap!" => String::from("A shocking number of coyotes are killed every year in ACME product related incidents."),
             _ => String::from("Pass"),
         };
 
@@ -85,23 +90,28 @@ impl EventHandler for Handler {
             let response = MessageBuilder::new().push(responsemessage).build();
 
             if let Err(why) = msg.channel_id.say(&ctx.http, response).await {
-                println!(
-                    "The damn pony express failed to deliver the message! Goshdarnit!: {:?}",
-                    why
-                )
+                println!("It's hard to say what happened here... {:?}", why)
             }
         }
     }
 
     ///Logic that executes when the "Ready" event is received. The most important thing here is the logic for posting my species
     /// Because
-    async fn ready(&self, ctx: Context, ready: Ready) {
+    async fn ready(&self, ctx: Context, mut ready: Ready) {
         println!("{} is connected!", ready.user.name);
         // My assumption is that once the await concludes we will continue to execute code
         // The problem with awaiting a future in your current function is that once you've done that you are suspending execution until the future is complete
         // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever.
         watch_westworld(&ctx).await;
+        ctx.http()
+            .edit_nickname(511743033117638656, Some("Serina"))
+            .await
+            .expect("I was able to change my nickname to Serina");
 
+        let avatar = serenity::utils::read_image("./serina.jpg")
+            .expect("We were able to read the avatar in");
+        ready.user.edit(&ctx, |p| p.avatar(Some(&avatar))).await;
+        ready.user.edit(&ctx, |p| p.username("Serina")).await;
         // Check to see if speciesupdateschannel exists, if it does not exist then create it
         // Get all of the guilds channel ids
         let channels = ctx
@@ -314,7 +324,7 @@ async fn main() {
 }
 
 async fn discord(species: Arc<Mutex<Option<String>>>) {
-    dotenv::dotenv().expect("Teddy, have you seen the .env file?");
+    dotenv::dotenv().expect("Doctor, where did you put the .env file?");
     let botuserid = env::var("BOT_USER_ID").expect("An existing User ID");
 
     if let Ok(buid) = botuserid.parse::<u64>() {
@@ -339,7 +349,7 @@ async fn discord(species: Arc<Mutex<Option<String>>>) {
             .event_handler(Handler)
             .framework(framework)
             .await
-            .expect("And it all started with, Wyatt");
+            .expect("To have sucessfully built the client.");
 
         // Get a RW lock for a short period of time so that we can shove the arc pointers into their proper containers
         {
@@ -349,10 +359,7 @@ async fn discord(species: Arc<Mutex<Option<String>>>) {
         }
 
         if let Err(why) = client.start().await {
-            println!(
-                "We failed, we failed to start listening for events: {:?}",
-                why
-            )
+            println!("An event listening failure, has occurred: {:?}", why)
         }
     }
 }
@@ -457,7 +464,8 @@ async fn ellengender(ctx: &Context, msg: &Message) -> CommandResult {
 // Non Discord Functions
 
 async fn watch_westworld(ctx: &Context) {
-    ctx.set_activity(Activity::watching("Westworld")).await;
+    ctx.set_activity(Activity::watching("the stars pass by..."))
+        .await;
     // TODO: Make what Dolores activity is change every day
 }
 
