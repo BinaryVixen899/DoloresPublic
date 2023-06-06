@@ -99,19 +99,33 @@ impl EventHandler for Handler {
     /// Because
     async fn ready(&self, ctx: Context, mut ready: Ready) {
         println!("{} is connected!", ready.user.name);
-        // My assumption is that once the await concludes we will continue to execute code
-        // The problem with awaiting a future in your current function is that once you've done that you are suspending execution until the future is complete
-        // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever.
-        watch_westworld(&ctx).await;
+
         ctx.http()
             .edit_nickname(511743033117638656, Some("Serina"))
             .await
-            .expect("I was able to change my nickname to Serina");
+            .or_else(panic!(
+                "Could not execute species loop: Set Nickname Failure."
+            ))
+            .expect("able to set nickname else panic");
 
         let avatar = serenity::utils::read_image("./serina.jpg")
-            .expect("We were able to read the avatar in");
-        ready.user.edit(&ctx, |p| p.avatar(Some(&avatar))).await;
-        ready.user.edit(&ctx, |p| p.username("Serina")).await;
+            .or_else(panic!(
+                "Could not execute species loop: Read Avatar Failure"
+            ))
+            .expect("able to read avatar else panic");
+
+        ready
+            .user
+            .edit(&ctx, |p| p.avatar(Some(&avatar)))
+            .await
+            .or_else(panic!("Could not execute species loop: Set Avatar Failure"))
+            .expect("An accessible avatar in the directory I'm called from.");
+
+        ready
+            .user
+            .edit(&ctx, |p| p.username("Serina"))
+            .await
+            .expect("Being able to change my username");
         // Check to see if speciesupdateschannel exists, if it does not exist then create it
         // Get all of the guilds channel ids
         let channels = ctx
@@ -120,6 +134,11 @@ impl EventHandler for Handler {
             .await // stop executing the function until we get the results back, which is very useful
             // If we don't have the permissions we need or can't connect to the API we should crash
             .expect("we were able to get the channels");
+
+        // My assumption is that once the await concludes we will continue to execute code
+        // The problem with awaiting a future in your current function is that once you've done that you are suspending execution until the future is complete
+        // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever.
+        watch_westworld(&ctx).await;
 
         // Set the specieschannelid so that we can update it once we find it
         let mut specieschannelid = None;
