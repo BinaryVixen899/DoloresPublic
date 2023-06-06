@@ -29,9 +29,12 @@ use futures_util::stream::StreamExt;
 use tokio::join;
 
 //Misc
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use reqwest::header::ACCEPT;
 use serde_json::json;
+use std::fs::File;
+use std::io::{self, BufRead};
+use std::path::Path;
 
 #[group]
 #[commands(ellengender, ellenspecies /*fronting*/)]
@@ -480,7 +483,7 @@ async fn ellengender(ctx: &Context, msg: &Message) -> CommandResult {
 //     Ok(())
 // }
 
-// Non Discord Functions
+// Non Discord Functions //
 
 async fn watch_westworld(ctx: &Context) {
     ctx.set_activity(Activity::watching("the stars pass by..."))
@@ -557,3 +560,25 @@ fn poll_notion() -> impl Stream<Item = Result<String>> {
         }
     }
 }
+
+fn get_phrases() -> Result<Vec<String>> {
+    if let Ok(phrases) = read_lines("./lines.txt") {
+        let phrases: Vec<String> = phrases.filter_map(|f| f.ok()).collect();
+        // this consumes the iterator, as rust-by-example notes
+        // although this should also be obvious imo
+        return Ok(phrases);
+    } else {
+        return Err(anyhow!("Could not return phrases!"));
+    }
+}
+
+fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
+where
+    P: AsRef<Path>,
+{
+    let file = File::open(filename)?;
+    Ok(io::BufReader::new(file).lines())
+}
+
+//read_lines is not some library function we're overriding
+//read_lines IS our function except through the power of generics, we are able to do all this
