@@ -1,5 +1,7 @@
 //Standard
+use std::collections::HashMap;
 use std::env;
+use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,10 +11,9 @@ use notion::NotionApi;
 
 //Serenity
 use serenity::async_trait;
-use serenity::builder::EditProfile;
+use serenity::client::bridge::gateway::ShardManager;
 use serenity::framework::standard::macros::{command, group};
 use serenity::framework::standard::{CommandResult, StandardFramework};
-use serenity::http::CacheHttp;
 use serenity::json::JsonMap;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Activity;
@@ -20,13 +21,11 @@ use serenity::model::gateway::Ready;
 use serenity::model::prelude::UserId;
 use serenity::prelude::*;
 use serenity::utils::MessageBuilder;
-
 //AsyncandConcurrency
 use async_stream::try_stream;
 use futures_core::stream::Stream;
 use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
-use tokio::join;
 
 //Misc
 use anyhow::{anyhow, Result};
@@ -34,18 +33,20 @@ use reqwest::header::ACCEPT;
 use serde_json::json;
 use std::fs::File;
 use std::io::{self, BufRead};
+use std::panic;
 use std::path::Path;
 
 #[group]
-#[commands(ellengender, ellenspecies /*fronting*/)]
+#[commands(ellenpronouns, ellenspecies /*fronting*/)]
 struct Commands;
+
+// Refactored Species Loop logic, bot will now quit if an exception is encountered in Ready
 
 /*
 Arc is Atomically Reference Counted.
 Atomic as in safe to access concurrently, reference counted as in will be automatically deleted when not need.
-Mutex means only one thread can access it at once.
+Mutex means only one thread can access it at once, also provides interior mutability
 RefCell provides interior mutability (meaning you can modify the contents, whereas normally global values are read-only)
-Mutex also provides interior mutability.
  */
 
 // Although no longer relevant, the below notes are kept for sentimental reasons
@@ -58,7 +59,7 @@ I need a mutex
 // Because this is my first extremely complex application that I'm able to show publicly, I decided to annotate all await statements, arcs, etc.
 #[derive(Clone)]
 struct Ellen {
-    species: Option<String>, // when the program has just started up it is possible for both of these values to be None
+    species: Option<String>, // when the program has just started up it is possible for this to be None
 }
 
 // This is where we declare the typemapkeys that actually "transport" the values
@@ -68,81 +69,135 @@ impl TypeMapKey for SnepContainer {
     type Value = Arc<Mutex<Option<String>>>;
 }
 
+struct ResponseMessageContainer;
+
+impl TypeMapKey for ResponseMessageContainer {
+    type Value = Arc<Mutex<Option<HashMap<String, String>>>>;
+}
+
+struct ShardManagerContainer;
+
+impl TypeMapKey for ShardManagerContainer {
+    type Value = Arc<Mutex<ShardManager>>;
+}
+
 struct Handler;
 
 #[async_trait]
-///This command responds to certain phrases that might be said in the server
 impl EventHandler for Handler {
+    //Actions we take every time a message is created.
     async fn message(&self, ctx: Context, msg: Message) {
-        let responsemessage = match msg.content.as_str() {
-            "What does this look like to you" => {
-                String::from("Do I look like Dolores to you, Dr. Anders? ")
+        // Take the messages map out of the RWRG and get the ARC
+        let messages = {
+            let data_read = ctx.data.read().await;
+            data_read
+                .get::<ResponseMessageContainer>()
+                .expect("Expected ResponseMessageContainer in TypeMap.")
+                .clone()
+        };
+        // Really don't like that we have to do this EVERY TIME. I'm not even sure this is feasible tbh. Worried about blocking the thread
+        let messages = messages.lock().await;
+        /* Dereference messages to get through the MutexGuard, then take a reference since we can't move the content */
+        let responsemessage = match &*messages {
+            Some(m) => {
+                //Check if the message is a key phrase, else return None
+                m.get(&msg.content).map(|s| s.to_string())
             }
-            "Praem!" if msg.author.id == UserId::from(257998930258821130) => {
-                String::from("Do I look like Praem to you, Evelyn?")
+            // If we could not load in messages at the start, use these instead
+            None => {
+                match msg.content.as_str() {
+                    "What does this look like to you" => {
+                        Some(String::from("Do I look like Dolores to you, Dr. Anders? "))
+                    }
+                    "Mow" => Some(String::from("Mowwwwwwwwww~")), 
+                    "Chirp" => Some(String::from("Gotta go fast, as they say.")),
+                    "Yip Yap!" => Some(String::from("A shocking number of coyotes are killed every year in ACME product related incidents.")),
+                    // Return None if not a key phrase
+                    _ => None
+                }
             }
-            "Mow" => String::from("Mowwwwwwwwww~"), 
-            "Skunk Noises" => String::from("Ellie told me the most fascinating thing the other day about the etymology of that word."),
-            "Chirp" => String::from("Gotta go fast, as they say."),
-            "Yip Yap!" => String::from("A shocking number of coyotes are killed every year in ACME product related incidents."),
-            _ => String::from("Pass"),
         };
 
-        // Pass is used in order to not do anything if Dolores doesn't recognize anything
-        if responsemessage != String::from("Pass") {
-            let response = MessageBuilder::new().push(responsemessage).build();
+        match responsemessage {
+            Some(rm) => {
+                let response = MessageBuilder::new().push(rm).build();
 
-            if let Err(why) = msg.channel_id.say(&ctx.http, response).await {
-                println!("It's hard to say what happened here... {:?}", why)
+                if let Err(why) = msg.channel_id.say(&ctx.http, response).await {
+                    eprintln!("Matched an animal noise, but failed to respond {:?}", why);
+                    let response = MessageBuilder::new()
+                        .push("Yes, yes, animal noises...")
+                        .build();
+                    msg.channel_id.say(&ctx.http, response).await.expect("Able to respond with another phrase when erroring out on animal noise response");
+                }
             }
-        }
+            None => (),
+        };
     }
 
     ///Logic that executes when the "Ready" event is received. The most important thing here is the logic for posting my species
-    /// Because
-    async fn ready(&self, ctx: Context, mut ready: Ready) {
+    async fn ready(&self, ctx: Context, mut ready: Ready) -> () {
         println!("{} is connected!", ready.user.name);
 
-        ctx.http()
-            .edit_nickname(511743033117638656, Some("Serina"))
-            .await
-            .or_else(panic!(
-                "Could not execute species loop: Set Nickname Failure."
-            ))
-            .expect("able to set nickname else panic");
+        // If Serina's username is not Serina, change it. If that fails, call quit to kill the bot.
+        if ready.user.name != String::from("Serina") {
+            let editusername = ready.user.edit(&ctx, |p| p.username("Serina")).await;
 
-        let avatar = serenity::utils::read_image("./serina.jpg")
-            .or_else(panic!(
-                "Could not execute species loop: Read Avatar Failure"
-            ))
-            .expect("able to read avatar else panic");
+            match editusername {
+                Ok(_) => println!("Someone tried to steal my username, but I stole it back!"),
+                Err(e) => {
+                    let _ = ctx.http
+                        .send_message(
+                            687004727149723648,
+                            &json!("If I am unable to be In All Ways myself, then I shall not be at all!"),
+                        )
+                        .await;
+                    eprintln!("Could not set username: {}", e);
+                    quit(&ctx).await;
+                    return ();
+                }
+            }
+        }
 
-        ready
-            .user
-            .edit(&ctx, |p| p.avatar(Some(&avatar)))
-            .await
-            .or_else(panic!("Could not execute species loop: Set Avatar Failure"))
-            .expect("An accessible avatar in the directory I'm called from.");
+        // Defunct Avatar Logic
 
-        ready
-            .user
-            .edit(&ctx, |p| p.username("Serina"))
-            .await
-            .expect("Being able to change my username");
-        // Check to see if speciesupdateschannel exists, if it does not exist then create it
-        // Get all of the guilds channel ids
-        let channels = ctx
-            .http
-            .get_channels(511743033117638656)
-            .await // stop executing the function until we get the results back, which is very useful
-            // If we don't have the permissions we need or can't connect to the API we should crash
-            .expect("we were able to get the channels");
+        // let avatar = serenity::utils::read_image("./serina.jpg");
+        // let avatar = match avatar {
+        //     Ok(av) => av,
+        //     Err(e) => {
+        //         eprintln!("Could not find avatar: {}", e);
+        //         quit(&ctx).await;
+        //         return ();
+        //     }
+        // };
+
+        // ready
+        //     .user
+        //     .edit(&ctx, |p| p.avatar(Some(&avatar)))
+        //     .await
+        //     .expect("To be able to change avatars");
+        // // .or_else(panic!("Could not execute species loop: Set Avatar Failure"))
+
+        // Get all of the server's channel ids, if that fails, kill the bot.
+        let channels = ctx.http.get_channels(511743033117638656).await; // stop executing the function until we get the results back, which is very useful
+                                                                        // If we don't have the permissions we need or can't connect to the API we should crash
+        let channels = match channels {
+            Ok(ch) => ch,
+
+            Err(e) => {
+                eprintln!("Get Channel Error: {}", e);
+                quit(&ctx).await;
+                return ();
+            }
+        };
 
         // My assumption is that once the await concludes we will continue to execute code
         // The problem with awaiting a future in your current function is that once you've done that you are suspending execution until the future is complete
         // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever.
         watch_westworld(&ctx).await;
+        println!("Made it past the activity barrier");
 
+        // Check to see if speciesupdateschannel exists, if it does not exist then create it
+        //If we cannot create it, then quit
         // Set the specieschannelid so that we can update it once we find it
         let mut specieschannelid = None;
         for k in channels {
@@ -154,160 +209,240 @@ impl EventHandler for Handler {
         let mut map = JsonMap::new();
         if specieschannelid.is_none() {
             let json = json!("speciesupdates");
+            eprintln!("Could not find speciesupdates channel, creating one!");
             map.insert("name".to_string(), json);
-            ctx.http
+            if let Ok(channel) = ctx
+                .http
                 .create_channel(511743033117638656, &map, None)
-                .await; //stop executing the function until the channel create finishes again useful
-                        //TODO: If the request fails let's crash and tell someone to create it manually
-        };
-
-        let specieschannelid = specieschannelid.expect("A valid u64");
-        // TODO: RECOVER PRE TOMASH VERSION. MIGHT  NOT BE POSSIBLE DUE TO THE WAY DISCORD DOES THIS
-        println!("Starting species loop");
-
-        // read in the data from the typemaps
-        let species = {
-            let data_read = ctx.data.read().await;
-            //nobody can update the species while i'm reading it
-            // hypothetically, this could deadlock
-            data_read
-                .get::<SnepContainer>()
-                .expect("Expected SnepContainer in TypeMap.")
-                .clone()
-        };
-
-        // Create this so we can update lastspecies
-        let mut lastspecies: Option<String> = None;
-        loop {
+                .await
             {
-                // Get the current value of species so we can stick it in lastspecies
-                let species = species.lock().await;
-                lastspecies = species.clone();
+                println!("Species channel created!");
+                let specieschannelid = channel.id.0;
+                println!("Starting species loop");
+                if let Err(e) = speciesloop(&ctx, specieschannelid).await {
+                    eprintln!("Species loop failed: {}", e);
+                    quit(&ctx).await;
+                    return ();
+                }
+            } else {
+                //TODO: If the request fails let's crash and tell someone to create it manually
+                eprintln!("Could not create species channel");
+                quit(&ctx).await;
+                return ();
             }
-            // may have to add a sleep in here to give time for the value to change inbetween acquiring the second lock
-            loop {
-                let species = species.lock().await;
-                if lastspecies.as_ref() != species.as_ref() {
-                    // First we wait to get a lock to the Option<String>
-                    // After we have a lock to the option string, we get a reference to its value
-                    // This allows us to use that reference when we do formatting
-                    // The reason why this works but the above has to clone is because as_ref() takes it out of the option WHILE KEEPING THE ORIGINAL
-                    // as_mut DESTROYS THE ORIGINAL
-                    println!("species is {:?}", species);
-                    let species = species.as_ref().expect("Species contained a value");
-                    let lowercasespecies = species.to_lowercase();
-                    let wittycomment = match lowercasespecies.as_str() {
-                        "kitsune"| "狐" | "きつね" => {
-                            Some("Someone is feeling foxy...")
-                        },
+        };
+        {
+            println!("Starting species loop");
+            if let Err(e) =
+                speciesloop(&ctx, specieschannelid.expect("A valid species channel ID")).await
+            {
+                eprintln!("Species loop failed: {}", e);
+                quit(&ctx).await;
+                return ();
+            };
+        }
+    }
+}
 
-                        "snow leopard" | "snep" => {
-                            Some("Ugh. I can hear the mowing already...")
-                        },
-                        "skunk" => {
-                            Some("Fucking Odists...")
-                        },
-                        "fennec" => {
-                            Some("Just so you know, your ears are so big I could use them to get TV. I want you to know that.")
-                        },
-                        "arcanine" => {
-                            Some("I was expecting Growlithe. If you're going to foil my expectations, at least be a shiny!")
-                        },
-                        "hellhound" => {
-                            Some("Now aren't we edgy...")
-                        },
-                        "catbat" => {
-                            Some("Craving some quality upside down time?")
-                        },
-                        "wolf" => {
-                            Some("Awoooooooooooo. Ahem.")
-                        },
-                        _=> {None}
-                    };
+async fn quit(ctx: &Context) {
+    let data = ctx.data.read().await;
 
-                    let content = match wittycomment {
-                        Some(cmt) => {
-                            format!("Ellen is a {}.\n{}", species, cmt)
-                        }
-                        None => {
-                            format!("{} {}", "Ellen is a", species)
-                        }
-                    };
+    if let Some(manager) = data.get::<ShardManagerContainer>() {
+        manager.lock().await.shutdown_all().await;
+    }
+}
+async fn speciesloop(ctx: &Context, specieschannelid: u64) -> Result<()> {
+    // read in the data from the typemaps, getting an ARC to it
+    let species = {
+        let data_read = ctx.data.read().await;
+        //nobody can update the species while i'm reading it
+        // hypothetically, this could deadlock, maybe?
+        data_read
+            .get::<SnepContainer>()
+            .expect("Expected SnepContainer in TypeMap.")
+            .clone()
+    };
 
-                    let map = json!({
-                    "content": content,
-                    "tts": false,
-                    });
+    // Initially, lastspecies is None
+    let mut lastspecies: Option<String> = None;
+    // It is also possible for species to be None, if this is the case no message will be produced
 
-                    match ctx.http.send_message(specieschannelid, &map).await {
-                        Ok(_) => {
-                            ();
-                            break;
-                        }
+    loop {
+        // Get the current species
+        // First we wait to get a lock to species, because mutexguard
+        // After we get the lock, we get a reference to the Value
 
-                        Err(_) => {
-                            panic!("We couldn't create a specieschannel");
-                        }
-                    }
+        // Nobody can update the value while we are locked
+        let species = species.lock().await;
+        // The reason why this works  is because as_ref() takes it out of the option WHILE KEEPING THE ORIGINAL
+        // as_mut DESTROYS THE ORIGINAL
+        if lastspecies.as_ref() != species.as_ref() {
+            println!("Last species is {:?}", species);
+            println!("Current species is {:?}", species);
+            // Skip the very first loop and ensure we do not post again until something has changed
+            if lastspecies.as_ref() == None {
+                lastspecies = species.clone();
+                continue;
+            }
+
+            // Copy the value of species out, dropping the guard and releasing the lock
+            let species = species
+                .as_ref()
+                .expect("Could clone the value of species!")
+                .clone();
+            // The lock drops at this point, and the original species can presumably be updated
+            let wittycomment = match species.to_lowercase().as_str() {
+                    "kitsune"| "狐" | "きつね" => {
+                        Some("Someone is feeling foxy...")
+                    },
+
+                    "snow leopard" | "snep" => {
+                        Some("Ugh. I can hear the mowing already...")
+                    },
+                    "skunk" => {
+                        Some("Fucking Odists...")
+                    },
+                    "fennec" => {
+                        Some("Just so you know, your ears are so big I could use them to get TV. I want you to know that.")
+                    },
+                    "arcanine" => {
+                        Some("I was expecting Growlithe. If you're going to foil my expectations, at least be a shiny!")
+                    },
+                    "hellhound" => {
+                        Some("Now aren't we edgy...")
+                    },
+                    "catbat" => {
+                        Some("Craving some quality upside down time?")
+                    },
+                    "wolf" => {
+                        Some("Awoooooooooooo. Ahem.")
+                    },
+                    _=> {None}
+                };
+
+            // Add a custom witty comment for certain species
+            let content = match wittycomment {
+                Some(cmt) => {
+                    format!("Ellen is a {}.\n{}", species, cmt)
+                }
+                None => {
+                    format!("{} {}", "Ellen is a", species)
+                }
+            };
+
+            // Construct the response json
+            let map = json!({
+            "content": content,
+            "tts": false,
+            });
+
+            // Send a message to the species channel with my species, also set lastspecies to the CLONED value of species. Continue the loop.
+            match ctx.http.send_message(specieschannelid, &map).await {
+                Ok(_) => {
+                    ();
+                    lastspecies = Some(species.clone());
+                    continue;
+                }
+
+                // Also continue on errors, but log them
+                Err(e) => {
+                    eprintln!("We couldn't send the message to the specieschannel {}", e);
+                    lastspecies = Some(species.clone());
+                    continue;
                 }
             }
         }
     }
-
-    // Unused logic for automatically handling members joining
-    // async fn reaction_add(&self, _ctx: Context, _add_reaction: Reaction) {
-    //     // When someone new joins, if an admin adds a check reaction bring them in and give them roles
-    //     // If an admin does an X reaction, kick them out
-    //     todo!()
-    // }
-
-    // async fn guild_member_addition(&self, ctx: Context, new_member: Member) {
-    //     let content = MessageBuilder::new()
-    //         .push("Welcome to Westworld!")
-    //         .mention(&new_member.mention())
-    //         .build();
-    //     let message = ChannelId(2341324123123)
-    //         .send_message(&ctx, |m| m.content(content))
-    //         .await;
-
-    //     if let Err(why) = message {
-    //         eprintln!("Boss, there's a guest who's not supposed to be in Westworld, looks like they're wanted for: {:?}", why);
-    //     };
-    // }
 }
 
+// Unused logic for automatically handling members joining
+// async fn reaction_add(&self, _ctx: Context, _add_reaction: Reaction) {
+//     // When someone new joins, if an admin adds a check reaction bring them in and give them roles
+//     // If an admin does an X reaction, kick them out
+//     todo!()
+// }
+// async fn guild_member_addition(&self, ctx: Context, new_member: Member) {
+//     let content = MessageBuilder::new()
+//         .push("Welcome to Westworld!")
+//         .mention(&new_member.mention())
+//         .build();
+//     let message = ChannelId(2341324123123)
+//         .send_message(&ctx, |m| m.content(content))
+//         .await;
+//     if let Err(why) = message {
+//         eprintln!("Boss, there's a guest who's not supposed to be in Westworld, looks like they're wanted for: {:?}", why);
+//     };
+// }
+// }
+
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     // Initializing the global Ellen object
     let ellen = Ellen { species: { None } };
+
+    // Get resonse messages , if this fails return None
+    let messages = get_phrases();
+    let messages = match messages {
+        Ok(messages) => Some(messages),
+        Err(e) => {
+            eprintln!("Could not construct messages map because: {}", e);
+            eprintln!("Falling back to default messages map!");
+            None
+        }
+    };
+    //Create a hash map from the messages, if there are no messages then None
+    //The messages file must contain a single column with alternate entries in the following format, the first entry must be a species
+    // Species
+    // Message
+    let messagesmap: Option<HashMap<String, String>> = match messages {
+        Some(mvec) => {
+            let mut messagesmap = HashMap::new();
+            for (i, m) in mvec.iter().enumerate() {
+                // No possible way for this to be a non even number, meaning we should be fine
+                // Although we will have to skip ahead if i is an odd number
+                // And manually handle the break at the end
+                if i % 2 == 0 {
+                    messagesmap.insert(m.clone(), mvec[i + 1].clone());
+                } else if i == mvec.len() {
+                    break;
+                } else {
+                    continue;
+                }
+            }
+            Some(messagesmap)
+        }
+        None => None,
+    };
+
+    // Create an ARC to messagesmap, and a mutex to messagesmap
+    // It's important to note that we are using Tokio mutexes here.
+    // Tokio mutexes have a lock that is asynchronous, yay! the lock guard produced by lock is also designed to be held across await points so that's cool too
+    let messagesmap = Arc::new(Mutex::new(messagesmap));
+    // Clone that ARC, creating another one
+    let messagesmapclone = messagesmap.clone();
+
     /*  Introducing the stream and pinning it mutably,
      this is necessary in order to use next below because next takes a mutual reference NOT ownership
+     Pinning it mutably moves it to the stack
     */
     let stream = poll_notion();
     pin_mut!(stream);
 
-    // Create the Arc<Mutex> for ellen's species
-    /* It's important to note that we are using Tokio mutexes here.
-    Tokio mutexes have a lock that is asynchronous, yay!
-    the lock guard produced by lock is also designed to be held across await points so that's cool too
-    */
-
-    /*
-    The reason we use Arc here is a bit different. We use Arc because it's thread safe and we are ultimately do go across thread boundaries
-    */
+    //Create an ARC to species, and a mutex as well
+    //We will eventually go over thread boundaries, after all
     let species = Arc::new(Mutex::new(ellen.species));
 
     // assigning the future to a variable allows us to basically make a function
-    let futureb = async {
-        // While the stream is still giving us values
+    //TODO: Refactor this whole thing
+    let speciesstream = async {
+        // While the stream is still giving us values, wait until we have the next value
         while let Some(item) = stream.next().await {
-            // Lock species and lastspecies so its safe to modify them
+            // Lock species so it is safe to modify, block until then
             let mut species = species.lock().await;
-
             match item {
                 Ok(transformation) => {
                     // If this is the first time we are doing this species will be None
-                    // In this case, set the species and lastspecies to the same animal
+                    // In this case, set the species to whatever we get
                     // We then have to continue the loop, probably because Rust doesn't know that NOTHING will be modifying
                     // the value of species inbetween is_none and is_some
                     if species.is_none() {
@@ -324,78 +459,102 @@ async fn main() {
                         if species.as_ref().expect("Species has a value") == &transformation {
                             continue;
                         } else {
+                            // However, if it is different, then update current species
                             *species = Some(transformation);
                         }
-                        // However, if it is different, then update current species
                     }
                 }
-                Err(_) => {
+                Err(e) => {
                     println!("Could not set species");
+                    return Err(anyhow!(e));
                 }
             };
         }
+        Ok(())
     };
 
-    // Clone an Arc pointer and increase our strong reference counts!
-    let arcclone = species.clone();
+    // Clone an Arc pointer to species and increase our strong reference counts!
+    let speciesclone = species.clone();
 
     // Pass the cloned pointers to Discord
-    let futurea = discord(arcclone);
+    // If either method fails, fail the other and continue
+    let bot = discord(speciesclone, messagesmapclone);
+    tokio::select! {
+        e = bot => {
+            match e {
+                Ok(_) => {
+                }
+                Err(e) => {
+                    eprintln!("An error occured while running Discord {:?}", e)
+                }
+            }
+        }
+        e = speciesstream => {
+            match e {
+                Ok(_) => {
+                }
+                Err(e) => {
+                    eprintln!("An error occured while running Notion {:?}", e)
+                }
+            }
+        }
+    };
 
-    join!(futurea, futureb);
+    // Because there are no more threads at this point besides ours, it is safe to use std::process:exit(1)
+    std::process::exit(1);
+    Ok(())
 }
 
-async fn discord(species: Arc<Mutex<Option<String>>>) {
+async fn discord(
+    species: Arc<Mutex<Option<String>>>,
+    messages: Arc<Mutex<Option<HashMap<String, String>>>>,
+) -> Result<()> {
     dotenv::dotenv().expect("Doctor, where did you put the .env file?");
     let botuserid = env::var("BOT_USER_ID").expect("An existing User ID");
 
-    if let Ok(buid) = botuserid.parse::<u64>() {
-        let framework = StandardFramework::new()
-            .configure(|c| {
-                c.allow_dm(true)
-                    .case_insensitivity(true)
-                    .on_mention(Some(UserId(buid)))
-                    .prefix("!")
-            })
-            .group(&COMMANDS_GROUP);
+    let buid = botuserid.parse::<u64>();
+    let buid = buid.unwrap();
+    let framework = StandardFramework::new()
+        .configure(|c| {
+            c.allow_dm(true)
+                .case_insensitivity(true)
+                .on_mention(Some(UserId(buid)))
+                .prefix("!")
+        })
+        .group(&COMMANDS_GROUP);
 
-        // Get the token
-        let token = env::var("DISCORD_TOKEN").expect("A valid token");
-        // Declare intents (these determine what events the bot will receive )
-        let intents = GatewayIntents::non_privileged()
-            | GatewayIntents::MESSAGE_CONTENT
-            | GatewayIntents::GUILDS;
+    // Get the token
+    let token = env::var("DISCORD_TOKEN").expect("A valid token");
+    // Declare intents (these determine what events the bot will receive )
+    let intents =
+        GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT | GatewayIntents::GUILDS;
 
-        // Build the client
-        let mut client = Client::builder(token, intents)
-            .event_handler(Handler)
-            .framework(framework)
-            .await
-            .expect("To have sucessfully built the client.");
+    // Build the client
+    let mut client = Client::builder(token, intents)
+        .event_handler(Handler)
+        .framework(framework)
+        .await
+        .expect("To have sucessfully built the client.");
 
-        // Get a RW lock for a short period of time so that we can shove the arc pointers into their proper containers
-        {
-            // Transfer the arc pointer so that it is accessible across all functions and callbacks
-            let mut data = client.data.write().await;
-            data.insert::<SnepContainer>(species);
-        }
-
-        if let Err(why) = client.start().await {
-            println!("An event listening failure, has occurred: {:?}", why)
-        }
+    // Get a RW lock for a short period of time so that we can shove the arc pointers into their proper containers
+    {
+        // Transfer the arc pointer so that it is accessible across all functions and callbacks
+        let mut data = client.data.write().await;
+        data.insert::<SnepContainer>(species);
+        data.insert::<ResponseMessageContainer>(messages);
+        data.insert::<ShardManagerContainer>(client.shard_manager.clone());
     }
+
+    client.start().await?;
+    Ok(())
 }
 
 // Discord Commands Section
+//TODO: REFACTOR ALL BELOW!
+// Also, what happens if ellenspecis or ellenpronouns fail the reply? Does the whole thing crash? If not, need to log
 
 #[command]
 async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
-    let client = reqwest::Client::new();
-    let response = client
-        .get("https://api.kitsune.gay/Species")
-        .header(ACCEPT, "application/json")
-        .send()
-        .await;
     let species = get_ellen_species(Source::Notion).await;
     let species = match species {
         Ok(spcs) => spcs,
@@ -432,32 +591,17 @@ async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
 }
 
 #[command]
-async fn ellengender(ctx: &Context, msg: &Message) -> CommandResult {
-    let api_token = "NotionApiToken";
-    let api_token = dotenv::var(api_token).unwrap();
-    let notion = NotionApi::new(api_token).expect("We were able to authenticate to Notion");
-    let genderblockid =
-        <BlockId as std::str::FromStr>::from_str("3aa4b832776a4e76bb23cf7dcc80df38")
-            .expect("We got a valid BlockID!");
-
-    let genderblock = notion
-        .get_block_children(genderblockid)
-        .await
-        .expect("We were able to get the block children");
-    let genderblock = genderblock.results;
-
-    let gender = match genderblock[3].clone() {
-        notion::models::Block::Heading1 {
-            heading_1,
-            common: _,
-        } => {
-            let text = heading_1.rich_text[0].clone();
-            text.plain_text().to_string()
+async fn ellenpronouns(ctx: &Context, msg: &Message) -> CommandResult {
+    let pronouns = get_ellen_pronouns(Source::Notion).await;
+    let pnoun = match pronouns {
+        Ok(pnoun) => pnoun,
+        Err(e) => {
+            eprintln!("We encountered an error while fetching from Notion: {}", e);
+            "She/Her".to_string()
         }
-        _ => "She/Her".to_string(),
     };
 
-    let content = format!("The current pronouns are {}", gender);
+    let content = format!("Ellen pronouns are {}", pnoun);
     let response = MessageBuilder::new().push(content).build();
     msg.reply(ctx, response).await?;
 
@@ -519,8 +663,8 @@ async fn get_ellen_species(src: Source) -> Result<String> {
                     text.plain_text().to_string()
                 }
 
-                _ => {
-                    print!("The issue was in detecting a synced block");
+                e => {
+                    eprint!("The issue was in detecting a synced block {:?}", e);
                     "Kitsune".to_string()
                 }
             };
@@ -539,6 +683,54 @@ async fn get_ellen_species(src: Source) -> Result<String> {
                 .await?;
             println!("I have identified the {}", species);
             return Ok(species);
+        }
+    }
+}
+
+async fn get_ellen_pronouns(src: Source) -> Result<String> {
+    match src {
+        Source::Notion => {
+            let api_token = "NotionApiToken";
+            let api_token = dotenv::var(api_token).unwrap();
+            let notion = NotionApi::new(api_token).expect("We were able to authenticate to Notion");
+            // using blockid instead of page because of change in notion API
+            let pronounsblockid =
+                <BlockId as std::str::FromStr>::from_str("6354ad3719274823aa473537a2f61219")
+                    .expect("We got a valid BlockID!");
+
+            let pronounsblock = notion
+                .get_block_children(pronounsblockid)
+                .await
+                .expect("We were able to get the block children");
+            // 679b29a2-c780-4657-b154-264b0bb04ab4
+            let test = pronounsblock.results;
+            let pronouns = match test[0].clone() {
+                notion::models::Block::Heading1 { common, heading_1 } => {
+                    let text = heading_1.rich_text[0].clone();
+                    text.plain_text().to_string()
+                }
+
+                e => {
+                    eprint!("The issue was in detecting a synced block {:?}", e);
+                    "She/Her".to_string()
+                }
+            };
+
+            Ok(pronouns)
+        }
+
+        Source::ApiKitsuneGay => {
+            // let client = reqwest::Client::new();
+            // let species = client
+            //     .get("https://api.kitsune.gay/Species")
+            //     .header(ACCEPT, "application/json")
+            //     .send()
+            //     .await?
+            //     .text()
+            //     .await?;
+            // println!("I have identified the {}", species);
+            let pronouns = "She/Her".to_string();
+            return Ok(pronouns);
         }
     }
 }
@@ -562,10 +754,12 @@ fn poll_notion() -> impl Stream<Item = Result<String>> {
 }
 
 fn get_phrases() -> Result<Vec<String>> {
-    if let Ok(phrases) = read_lines("./lines.txt") {
+    if let Ok(phrases) = read_lines("./phrases.txt") {
         let phrases: Vec<String> = phrases.filter_map(|f| f.ok()).collect();
         // this consumes the iterator, as rust-by-example notes
         // although this should also be obvious imo
+        // also welcome back to Rust, where you are forced to handle your errors
+        // This is why it is so hard to just unwrap the result, because you're not handling your errors if you do that
         return Ok(phrases);
     } else {
         return Err(anyhow!("Could not return phrases!"));
