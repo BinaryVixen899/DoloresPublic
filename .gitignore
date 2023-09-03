@@ -14,3 +14,4 @@ Cargo.lock
 *.pdb
 .vscode/launch.json
 Dolores/src/.env
+.env
