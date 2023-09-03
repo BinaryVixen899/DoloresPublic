@@ -26,6 +26,8 @@ use async_stream::try_stream;
 use futures_core::stream::Stream;
 use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
+use std::sync::mpsc::{Sender, Receiver};
+use std::sync::mpsc;
 
 //Misc
 use anyhow::{anyhow, Result};
@@ -60,6 +62,7 @@ I need a mutex
 #[derive(Clone)]
 struct Ellen {
     species: Option<String>, // when the program has just started up it is possible for this to be None
+    pronouns: String
 }
 
 // This is where we declare the typemapkeys that actually "transport" the values
@@ -378,7 +381,7 @@ async fn speciesloop(ctx: &Context, specieschannelid: u64) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initializing the global Ellen object
-    let ellen = Ellen { species: { None } };
+    let ellen = Ellen { species: { None }, pronouns: {"She/Her".to_string()} };
 
     // Get resonse messages , if this fails return None
     let messages = get_phrases();
@@ -425,12 +428,14 @@ async fn main() -> Result<()> {
      this is necessary in order to use next below because next takes a mutual reference NOT ownership
      Pinning it mutably moves it to the stack
     */
-    let stream = poll_notion();
+    let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
+    let stream = poll_notion(tx);
     pin_mut!(stream);
 
     //Create an ARC to species, and a mutex as well
     //We will eventually go over thread boundaries, after all
     let species = Arc::new(Mutex::new(ellen.species));
+    // let pronouns = Arc::new(Mutex::new(ellen.pronouns));
 
     // assigning the future to a variable allows us to basically make a function
     //TODO: Refactor this whole thing
@@ -472,6 +477,24 @@ async fn main() -> Result<()> {
         }
         Ok(())
     };
+
+    // let pronouns_stream = 
+    // async {
+    //     match rx.recv() {
+    //         Ok(r) => {
+
+
+    //         },
+
+    //         Err(e) => {
+    //             println!("Could not set pronouns");
+    //             return Err(anyhow!(e));
+    //         }
+    //     }
+        
+
+
+    // };
 
     // Clone an Arc pointer to species and increase our strong reference counts!
     let speciesclone = species.clone();
@@ -640,6 +663,7 @@ enum Source {
     ApiKitsuneGay,
 }
 
+// TODO: Collapse these into generic functions
 async fn get_ellen_species(src: Source) -> Result<String> {
     match src {
         Source::Notion => {
@@ -729,6 +753,7 @@ async fn get_ellen_pronouns(src: Source) -> Result<String> {
             //     .text()
             //     .await?;
             // println!("I have identified the {}", species);
+            eprintln!("ApiKitsuneGay was used as a source for pronouns! This function is not yet implemented!");
             let pronouns = "She/Her".to_string();
             return Ok(pronouns);
         }
@@ -737,17 +762,21 @@ async fn get_ellen_pronouns(src: Source) -> Result<String> {
 
 /// Poll notion every 30 seconds and get the result
 ///
-fn poll_notion() -> impl Stream<Item = Result<String>> {
+fn poll_notion(tx: Sender<String>) -> impl Stream<Item = Result<String>> {
+    //TODO: Consider reducing this... Want to get things as fast as possible
+    
     let sleep_time = Duration::from_secs(30);
-    //TODO: Find a way to return an error here
     try_stream! {
-        // TODO: Test if this will stop, if yes make it a loop
         loop {
+            // The ? hands the error off to the caller
             let species = get_ellen_species(Source::Notion).await?;
+            let pronouns = get_ellen_pronouns(Source::Notion).await?;
             //TODO: check for valid species
             if species.len() != 0 {
                 yield species;
             }
+            tx.send(pronouns)?;
+            
             tokio::time::sleep(sleep_time).await;
         }
     }
