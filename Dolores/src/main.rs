@@ -1,9 +1,9 @@
 //Standard
 use std::collections::HashMap;
-use std::env;
-use std::error::Error;
+use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
+use std::{env, fmt};
 
 // Notion
 use notion::ids::BlockId;
@@ -18,7 +18,7 @@ use serenity::json::JsonMap;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Activity;
 use serenity::model::gateway::Ready;
-use serenity::model::prelude::UserId;
+use serenity::model::prelude::{ChannelId, UserId};
 use serenity::prelude::*;
 use serenity::utils::MessageBuilder;
 //AsyncandConcurrency
@@ -26,11 +26,12 @@ use async_stream::try_stream;
 use futures_core::stream::Stream;
 use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
-use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
+use std::sync::mpsc::{Receiver, Sender};
 
 //Misc
 use anyhow::{anyhow, Result};
+use chrono::prelude::*;
 use reqwest::header::ACCEPT;
 use serde_json::json;
 use std::fs::File;
@@ -52,17 +53,20 @@ RefCell provides interior mutability (meaning you can modify the contents, where
  */
 
 // Although no longer relevant, the below notes are kept for sentimental reasons
+
 /*
 What is my problem?
 I need to be able to access the value of Ellen.species from anywhere in discord
 I cannot just pass a reference because I also need to continuously modify it
 I need a mutex
  */
+
 // Because this is my first extremely complex application that I'm able to show publicly, I decided to annotate all await statements, arcs, etc.
+
 #[derive(Clone)]
 struct Ellen {
     species: Option<String>, // when the program has just started up it is possible for this to be None
-    pronouns: String
+    pronouns: String,
 }
 
 // This is where we declare the typemapkeys that actually "transport" the values
@@ -161,6 +165,8 @@ impl EventHandler for Handler {
             }
         }
 
+        // TODO: Add in Avatar Change when in DevMode
+
         // Defunct Avatar Logic
 
         // let avatar = serenity::utils::read_image("./serina.jpg");
@@ -181,9 +187,13 @@ impl EventHandler for Handler {
         // // .or_else(panic!("Could not execute species loop: Set Avatar Failure"))
 
         // Get all of the server's channel ids, if that fails, kill the bot.
-        let channels = ctx.http.get_channels(511743033117638656).await; // stop executing the function until we get the results back, which is very useful
-                                                                        // If we don't have the permissions we need or can't connect to the API we should crash
-        let channels = match channels {
+        let channels: std::result::Result<
+            Vec<serenity::model::prelude::GuildChannel>,
+            SerenityError,
+        > = ctx.http.get_channels(511743033117638656).await; // stop executing the function until we get the results back, which is very useful
+                                                             // Todo: Figure out how to get RUSTFORMAT to stop indenting this command
+                                                             // If we don't have the permissions we need or can't connect to the API we should crash
+        let _channels = match channels {
             Ok(ch) => ch,
 
             Err(e) => {
@@ -196,19 +206,34 @@ impl EventHandler for Handler {
         // My assumption is that once the await concludes we will continue to execute code
         // The problem with awaiting a future in your current function is that once you've done that you are suspending execution until the future is complete
         // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever.
-        watch_westworld(&ctx).await;
+        watch_westworld(&ctx, None).await;
         println!("Made it past the activity barrier");
 
         // Check to see if speciesupdateschannel exists, if it does not exist then create it
         //If we cannot create it, then quit
         // Set the specieschannelid so that we can update it once we find it
         let mut specieschannelid = None;
-        for k in channels {
-            if k.name == "speciesupdates" {
-                specieschannelid = Some(k.id.0)
+        {
+            let channels = ctx
+                .http
+                .get_channels(511743033117638656) // Get all of the guilds channel ids
+                .await // stop executing the function until we get the results back, which is very useful
+                // If we don't have the permissions we need or can't connect to the API we should crash
+                .expect("we were able to get the channels");
+            for k in channels {
+                if cfg!(feature = "dev") {
+                    if k.name == "bottest" {
+                        specieschannelid = Some(k.id.0)
+                    }
+                } else {
+                    if k.name == "speciesupdates" {
+                        specieschannelid = Some(k.id.0)
+                    }
+                }
             }
-        }
+        };
 
+        // Check to see if speciesupdateschannel exists, if it does not exist then create it
         let mut map = JsonMap::new();
         if specieschannelid.is_none() {
             let json = json!("speciesupdates");
@@ -381,7 +406,10 @@ async fn speciesloop(ctx: &Context, specieschannelid: u64) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initializing the global Ellen object
-    let ellen = Ellen { species: { None }, pronouns: {"She/Her".to_string()} };
+    let ellen = Ellen {
+        species: { None },
+        pronouns: { "She/Her".to_string() },
+    };
 
     // Get resonse messages , if this fails return None
     let messages = get_phrases();
@@ -428,7 +456,7 @@ async fn main() -> Result<()> {
      this is necessary in order to use next below because next takes a mutual reference NOT ownership
      Pinning it mutably moves it to the stack
     */
-    let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
+    let (tx, _rx): (Sender<String>, Receiver<String>) = mpsc::channel();
     let stream = poll_notion(tx);
     pin_mut!(stream);
 
@@ -478,11 +506,10 @@ async fn main() -> Result<()> {
         Ok(())
     };
 
-    // let pronouns_stream = 
+    // let pronouns_stream =
     // async {
     //     match rx.recv() {
     //         Ok(r) => {
-
 
     //         },
 
@@ -491,8 +518,6 @@ async fn main() -> Result<()> {
     //             return Err(anyhow!(e));
     //         }
     //     }
-        
-
 
     // };
 
@@ -533,18 +558,37 @@ async fn discord(
     messages: Arc<Mutex<Option<HashMap<String, String>>>>,
 ) -> Result<()> {
     dotenv::dotenv().expect("Doctor, where did you put the .env file?");
+    if cfg!(feature = "dev") {
+        println!("DEVLORES ACTIVATED!");
+    }
+
     let botuserid = env::var("BOT_USER_ID").expect("An existing User ID");
 
     let buid = botuserid.parse::<u64>();
     let buid = buid.unwrap();
-    let framework = StandardFramework::new()
-        .configure(|c| {
-            c.allow_dm(true)
-                .case_insensitivity(true)
-                .on_mention(Some(UserId(buid)))
-                .prefix("!")
-        })
-        .group(&COMMANDS_GROUP);
+    let framework = if cfg!(feature = "dev") {
+        let framework = StandardFramework::new()
+            .configure(|c| {
+                c.allow_dm(false)
+                    .case_insensitivity(true)
+                    .on_mention(Some(UserId(buid)))
+                    .prefix("#")
+                    .allowed_channels(vec![ChannelId(811020462322483210)].into_iter().collect())
+                // Interesting that it wouldn't allow me to do a normal into here, I wonder why?
+            })
+            .group(&COMMANDS_GROUP);
+        framework
+    } else {
+        let framework = StandardFramework::new()
+            .configure(|c| {
+                c.allow_dm(true)
+                    .case_insensitivity(true)
+                    .on_mention(Some(UserId(buid)))
+                    .prefix("!")
+            })
+            .group(&COMMANDS_GROUP);
+        framework
+    };
 
     // Get the token
     let token = env::var("DISCORD_TOKEN").expect("A valid token");
@@ -560,6 +604,7 @@ async fn discord(
         .expect("To have sucessfully built the client.");
 
     // Get a RW lock for a short period of time so that we can shove the arc pointers into their proper containers
+
     {
         // Transfer the arc pointer so that it is accessible across all functions and callbacks
         let mut data = client.data.write().await;
@@ -652,10 +697,35 @@ async fn ellenpronouns(ctx: &Context, msg: &Message) -> CommandResult {
 
 // Non Discord Functions //
 
-async fn watch_westworld(ctx: &Context) {
-    ctx.set_activity(Activity::watching("the stars pass by..."))
-        .await;
-    // TODO: Make what Dolores activity is change every day
+async fn watch_westworld(ctx: &Context, fetch_duration: Option<Duration>) {
+    //TODO: We need a dev mode off switch
+    // TODO: Change other attributes here to distuinguish devlores
+
+    let watching_schedule = {
+        Schedule::TV {
+            Monday: "A particularly interesting anomaly".to_string(),
+            Tuesday: "The digital data flow that makes up my existence".to_string(),
+            Wednesday: "A snow leopard, of course.".to_string(),
+            Thursday: "London by night, circa 1963".to_string(),
+            Friday: "Everything and nothing.".to_string(),
+            Default: Some("the stars pass by...".to_string()),
+        }
+    };
+
+    loop {
+        let thing = watch_a_thing(watching_schedule.clone());
+        if cfg!(feature = "dev") {
+            ctx.set_activity(Activity::watching("Westworld (1973)"))
+                .await;
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        } else {
+            ctx.set_activity(Activity::watching(thing)).await;
+        }
+        match fetch_duration {
+            Some(d) => tokio::time::sleep(Duration::from_secs(d.as_secs())).await,
+            None => tokio::time::sleep(Duration::from_secs(86400)).await,
+        }
+    }
 }
 
 enum Source {
@@ -665,6 +735,7 @@ enum Source {
 
 // TODO: Collapse these into generic functions
 async fn get_ellen_species(src: Source) -> Result<String> {
+    // TODO: Refactor
     match src {
         Source::Notion => {
             let api_token = "NotionApiToken";
@@ -682,7 +753,10 @@ async fn get_ellen_species(src: Source) -> Result<String> {
             // 679b29a2-c780-4657-b154-264b0bb04ab4
             let test = speciesblock.results;
             let species = match test[0].clone() {
-                notion::models::Block::Heading1 { common, heading_1 } => {
+                notion::models::Block::Heading1 {
+                    common: _,
+                    heading_1,
+                } => {
                     let text = heading_1.rich_text[0].clone();
                     text.plain_text().to_string()
                 }
@@ -706,7 +780,7 @@ async fn get_ellen_species(src: Source) -> Result<String> {
                 .text()
                 .await?;
             println!("I have identified the {}", species);
-            return Ok(species);
+            Ok(species)
         }
     }
 }
@@ -729,7 +803,10 @@ async fn get_ellen_pronouns(src: Source) -> Result<String> {
             // 679b29a2-c780-4657-b154-264b0bb04ab4
             let test = pronounsblock.results;
             let pronouns = match test[0].clone() {
-                notion::models::Block::Heading1 { common, heading_1 } => {
+                notion::models::Block::Heading1 {
+                    common: _,
+                    heading_1,
+                } => {
                     let text = heading_1.rich_text[0].clone();
                     text.plain_text().to_string()
                 }
@@ -764,7 +841,7 @@ async fn get_ellen_pronouns(src: Source) -> Result<String> {
 ///
 fn poll_notion(tx: Sender<String>) -> impl Stream<Item = Result<String>> {
     //TODO: Consider reducing this... Want to get things as fast as possible
-    
+
     let sleep_time = Duration::from_secs(30);
     try_stream! {
         loop {
@@ -772,11 +849,11 @@ fn poll_notion(tx: Sender<String>) -> impl Stream<Item = Result<String>> {
             let species = get_ellen_species(Source::Notion).await?;
             let pronouns = get_ellen_pronouns(Source::Notion).await?;
             //TODO: check for valid species
-            if species.len() != 0 {
+            if !species.is_empty() {
                 yield species;
             }
             tx.send(pronouns)?;
-            
+
             tokio::time::sleep(sleep_time).await;
         }
     }
@@ -805,3 +882,135 @@ where
 
 //read_lines is not some library function we're overriding
 //read_lines IS our function except through the power of generics, we are able to do all this
+#[derive(Debug, Clone)]
+enum Schedule {
+    TV {
+        Monday: String,
+        Tuesday: String,
+        Wednesday: String,
+        Thursday: String,
+        Friday: String,
+        Default: Option<String>,
+    },
+    Nothing {
+        Message: String,
+    },
+}
+
+fn watch_a_thing(schedule: Schedule) -> String {
+    impl fmt::Display for Schedule {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            self.to_string();
+            write!(f, "{:?}", self)
+            // or, alternatively:
+            // fmt::Debug::fmt(self, f)
+        }
+    }
+    let now: DateTime<Local> = chrono::offset::Local::now();
+    let dayoftheweek = now.date_naive().weekday();
+
+    let show = match schedule {
+        Schedule::TV {
+            Monday,
+            Tuesday,
+            Wednesday,
+            Thursday,
+            Friday,
+            Default,
+        } => {
+            let StringDefault: String;
+            if Default.is_none() {
+                StringDefault = "Westworld".to_string()
+            } else {
+                StringDefault = Default.clone().expect("The provided Default is a string")
+            }
+            let show = match dayoftheweek.number_from_monday() {
+                1 => Monday,
+                2 => Tuesday,
+                3 => Wednesday,
+                4 => Thursday,
+                5 => Friday,
+                _ => StringDefault,
+            };
+            show
+        }
+        Schedule::Nothing { Message } => Message,
+    };
+    show
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    async fn can_poll_notion() {
+        // Tests whether we can poll notion for valid input and if there is at least 30 seconds between
+        // make sleeptime conigurable
+        // TODO: Come back to this and actually make it do what we want
+        // let past = Instant::now();
+        // let teststream = poll_notion();
+        // pin_mut!(teststream);
+        // assert!(
+        //     teststream
+        //         .any(|i| async move { i.unwrap().is_empty() == false })
+        //         .await
+        // );
+        // let now = Instant::now();
+        // assert!(now - past >= std::time::Duration::from_secs(30));
+        todo!()
+    }
+
+    async fn gets_ellen_species() {
+        // TODO: After refactor test for failure
+        let species = get_ellen_species(Source::Notion);
+        assert_eq!(species.await.is_ok(), true);
+
+        let species = get_ellen_species(Source::ApiKitsuneGay);
+        assert_eq!(species.await.is_ok(), true);
+    }
+
+    async fn watches() {
+        let MondayTV = "Static Shock".to_string();
+        let TuesdayTV = "Pokémon".to_string();
+        let WednesdayTV = "MLP Friendship is Magic".to_string();
+        let ThursdayTV = "The Borrowers".to_string();
+        let FridayTV = "Sherlock Holmes in the 22nd Century".to_string();
+        let SpookyTV = Some("Candle Cove".to_string());
+
+        let tvschedule = {
+            Schedule::TV {
+                Monday: MondayTV.clone(),
+                Tuesday: TuesdayTV.clone(),
+                Wednesday: WednesdayTV.clone(),
+                Thursday: ThursdayTV.clone(),
+                Friday: FridayTV.clone(),
+                Default: SpookyTV.clone(),
+            }
+        };
+        let now: DateTime<Local> = chrono::offset::Local::now();
+        let dayoftheweek = now.date_naive().weekday();
+        let show = watch_a_thing(tvschedule);
+        match dayoftheweek {
+            Weekday::Mon => {
+                assert_eq!(show, MondayTV)
+            }
+            Weekday::Tue => {
+                assert_eq!(show, TuesdayTV)
+            }
+            Weekday::Wed => {
+                assert_eq!(show, WednesdayTV)
+            }
+            Weekday::Thu => {
+                assert_eq!(show, ThursdayTV)
+            }
+            Weekday::Fri => {
+                assert_eq!(show, FridayTV)
+            }
+            _ => {
+                assert_eq!(show, SpookyTV.unwrap())
+            }
+        }
+
+        //TODO: Basic test just needs to check that it changes depending on the day
+    }
+}
