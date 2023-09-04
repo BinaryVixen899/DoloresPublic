@@ -15,3 +15,4 @@ Cargo.lock
 .vscode/launch.json
 Dolores/src/.env
 .env
+Dolores/phrases.txt

@@ -413,36 +413,13 @@ async fn main() -> Result<()> {
 
     // Get resonse messages , if this fails return None
     let messages = get_phrases();
-    let messages = match messages {
+    let messagesmap = match messages {
         Ok(messages) => Some(messages),
         Err(e) => {
             eprintln!("Could not construct messages map because: {}", e);
             eprintln!("Falling back to default messages map!");
             None
         }
-    };
-    //Create a hash map from the messages, if there are no messages then None
-    //The messages file must contain a single column with alternate entries in the following format, the first entry must be a species
-    // Species
-    // Message
-    let messagesmap: Option<HashMap<String, String>> = match messages {
-        Some(mvec) => {
-            let mut messagesmap = HashMap::new();
-            for (i, m) in mvec.iter().enumerate() {
-                // No possible way for this to be a non even number, meaning we should be fine
-                // Although we will have to skip ahead if i is an odd number
-                // And manually handle the break at the end
-                if i % 2 == 0 {
-                    messagesmap.insert(m.clone(), mvec[i + 1].clone());
-                } else if i == mvec.len() {
-                    break;
-                } else {
-                    continue;
-                }
-            }
-            Some(messagesmap)
-        }
-        None => None,
     };
 
     // Create an ARC to messagesmap, and a mutex to messagesmap
@@ -715,8 +692,10 @@ async fn watch_westworld(ctx: &Context, fetch_duration: Option<Duration>) {
     loop {
         let thing = watch_a_thing(watching_schedule.clone());
         if cfg!(feature = "dev") {
-            ctx.set_activity(Activity::watching("Westworld (1973)"))
-                .await;
+            ctx.set_activity(Activity::watching(
+                "🎶🎶🎶Snepgirl on a leash, you can feed her treats!🎶🎶🎶",
+            ))
+            .await;
             tokio::time::sleep(Duration::from_secs(60)).await;
         } else {
             ctx.set_activity(Activity::watching(thing)).await;
@@ -859,16 +838,39 @@ fn poll_notion(tx: Sender<String>) -> impl Stream<Item = Result<String>> {
     }
 }
 
-fn get_phrases() -> Result<Vec<String>> {
+fn get_phrases() -> Result<HashMap<std::string::String, std::string::String>> {
     if let Ok(phrases) = read_lines("./phrases.txt") {
         let phrases: Vec<String> = phrases.filter_map(|f| f.ok()).collect();
         // this consumes the iterator, as rust-by-example notes
         // although this should also be obvious imo
         // also welcome back to Rust, where you are forced to handle your errors
         // This is why it is so hard to just unwrap the result, because you're not handling your errors if you do that
-        return Ok(phrases);
+
+        // If there are any messages, create a hash map from them
+        if phrases.len() != 0 {
+            //The messages file must contain a single column with alternate entries in the following format, the first entry must be an animal sound,
+            // IE:
+            // Mow
+            // Something about sneps
+            let mut messagesmap = HashMap::new();
+            for (i, m) in phrases.iter().enumerate() {
+                // No possible way for this to be a non even number, meaning we should be fine
+                // Although we will have to skip ahead if i is an odd number
+                // And manually handle the break at the end
+                if i % 2 == 0 {
+                    messagesmap.insert(m.clone(), phrases[i + 1].clone());
+                } else if i == phrases.len() {
+                    break;
+                } else {
+                    continue;
+                }
+            }
+            return Ok(messagesmap);
+        } else {
+            return Err(anyhow!("Error extracting phrases!"));
+        }
     } else {
-        return Err(anyhow!("Could not return phrases!"));
+        return Err(anyhow!("Error reading from file!"));
     }
 }
 
