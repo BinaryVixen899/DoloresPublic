@@ -27,8 +27,7 @@ use async_stream::try_stream;
 use futures_core::stream::Stream;
 use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
-use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
 //Misc
 use anyhow::{anyhow, Error, Result};
@@ -435,11 +434,9 @@ async fn update_pronouns_loop(
     // If we want to destroy the mutex (and possibly the arc) but NOT the guard we can use into inner to consume it
 
     // this might not work because of the loop, we will see
-    let pronouns_rx: tokio::sync::MutexGuard<'_, Receiver<String>> = pronounsrx.lock().await;
-    let mut reciever_iter = pronouns_rx.try_iter();
-    while let pn = reciever_iter.next() {
-        let pron = pn.clone();
-        match pron {
+    let mut pronouns_rx: tokio::sync::MutexGuard<'_, Receiver<String>> = pronounsrx.lock().await;
+    while let pn = pronouns_rx.recv().await {
+        match pn {
             Some(r) => {
                 println!("Recieved pronouns!");
                 if pronouns.as_deref() == None {
@@ -452,7 +449,8 @@ async fn update_pronouns_loop(
                     println!("Pronoun changed detected!");
                     // Construct the response json
                     *pronouns = Some(r);
-                    let content: String = format!("Ellen's pronouns are test");
+                    let content: String =
+                        format!("Ellen's pronouns are {}", pronouns.as_ref().unwrap());
                     // pronouns.as_deref().is_some());
                     let map = json!({
                     "content": content,
@@ -529,7 +527,7 @@ async fn main() -> Result<()> {
      this is necessary in order to use next below because next takes a mutual reference NOT ownership
      Pinning it mutably moves it to the stack
     */
-    let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
+    let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel(1);
     let stream_reciever = Arc::new(Mutex::new(rx));
     let stream = poll_notion(tx);
     pin_mut!(stream);
@@ -779,14 +777,15 @@ async fn watch_westworld(ctx: &Context, fetch_duration: Option<Duration>) {
         ))
         .await;
     } else {
-        loop {
-            let thing = watch_a_thing(watching_schedule.clone());
-            ctx.set_activity(Activity::watching(thing)).await;
-            match fetch_duration {
-                Some(d) => tokio::time::sleep(Duration::from_secs(d.as_secs())).await,
-                None => tokio::time::sleep(Duration::from_secs(86400)).await,
-            }
-        }
+        // Commenting this out because it leads to us being in an infinite loop
+        // loop {
+        //     let thing = watch_a_thing(watching_schedule.clone());
+        //     ctx.set_activity(Activity::watching(thing)).await;
+        //     match fetch_duration {
+        //         Some(d) => tokio::time::sleep(Duration::from_secs(d.as_secs())).await,
+        //         None => tokio::time::sleep(Duration::from_secs(86400)).await,
+        //     }
+        // }
     }
 }
 
@@ -914,7 +913,7 @@ fn poll_notion(tx: Sender<String>) -> impl Stream<Item = Result<String>> {
             if !species.is_empty() {
                 yield species;
             }
-            tx.send(pronouns)?;
+            tx.send(pronouns).await?;
             println!("Sent pronouns!");
 
             tokio::time::sleep(sleep_time).await;
