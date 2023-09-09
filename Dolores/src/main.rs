@@ -271,64 +271,11 @@ impl EventHandler for Handler {
             }
         };
         let specieschannelid = specieschannelid.expect("A valid species channel ID");
-        // Extract the pronounsrx
-        let pronounsrx: Arc<Mutex<Receiver<String>>> = {
-            let data_read = ctx.data.read().await;
-            data_read
-                .get::<StreamContainer>()
-                .expect("Expected SnepContainer in TypeMap.")
-                .clone()
-        };
-        // Destroy the mutex (and possibly the arc)
 
-        let pronouns = async {
-            println!("Starting pronouns stream");
-            let mut pronouns_reciever = pronounsrx.lock().await;
-            // this might not work because of the loop, we will see
-            let mut reciever_iter = pronouns_reciever.try_iter();
-            loop {
-                match reciever_iter.next() {
-                    Some(r) => {
-                        println!("Recieved pronouns!");
-                        if Ellen.pronouns == None {
-                            Ellen.pronouns = Some(r);
-                            println!("Initial pronouns set done! This should not happen twice in the same execution");
-                        } else if Ellen.pronouns.as_ref().expect("msg") == &r {
-                            println!("Pronouns are the same!");
-                            continue;
-                        } else if &Ellen.pronouns.expect("Valid pronouns") != &r {
-                            println!("Pronoun changed detected!");
-                            // Construct the response json
-                            let content = format!("Ellen's pronouns are {}", r);
-                            let map = json!({
-                            "content": content,
-                            "tts": false,
-                            });
+        // TODO: PRONOUNSSTREAM HERE
+        println!("Starting pronouns stream");
 
-                            Ellen.pronouns = Some(r);
-                            let result = ctx.http.send_message(specieschannelid, &map).await;
-                            match result {
-                                Ok(_) => {
-                                    println!(
-                                        "Pronouns update sent to channel {}",
-                                        specieschannelid
-                                    );
-                                    ();
-                                }
-
-                                Err(e) => {
-                                    eprintln!("We couldn't send pronouns update {}", e);
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        println!("Recieved no pronouns");
-                    }
-                }
-            }
-        };
+        let pronouns = update_pronouns_loop(&ctx, specieschannelid, &mut Ellen.pronouns);
 
         let species_loop = async {
             println!("Starting species loop");
@@ -337,6 +284,7 @@ impl EventHandler for Handler {
             };
             Ok(())
         };
+
         tokio::select! {
             e = pronouns => {
                 match e {
@@ -466,6 +414,66 @@ async fn speciesloop(ctx: &Context, specieschannelid: u64) -> Result<()> {
                     lastspecies = Some(species.clone());
                     continue;
                 }
+            }
+        }
+    }
+}
+
+async fn update_pronouns_loop(
+    ctx: &Context,
+    specieschannelid: u64,
+    mut pronouns: &mut Option<String>,
+) -> () {
+    // Extract the pronounsrx
+    let pronounsrx: Arc<Mutex<Receiver<String>>> = {
+        let data_read = ctx.data.read().await;
+        data_read
+            .get::<StreamContainer>()
+            .expect("Expected SnepContainer in TypeMap.")
+            .clone()
+    };
+    // If we want to destroy the mutex (and possibly the arc) but NOT the guard we can use into inner to consume it
+
+    // this might not work because of the loop, we will see
+    let pronouns_rx: tokio::sync::MutexGuard<'_, Receiver<String>> = pronounsrx.lock().await;
+    let mut reciever_iter = pronouns_rx.try_iter();
+    while let pn = reciever_iter.next() {
+        let pron = pn.clone();
+        match pron {
+            Some(r) => {
+                println!("Recieved pronouns!");
+                if pronouns.as_deref() == None {
+                    *pronouns = Some(r);
+                    println!("Initial pronouns set done! This should not happen twice in the same execution");
+                } else if pronouns.as_ref().expect("msg") == &r {
+                    println!("Pronouns are the same!");
+                    continue;
+                } else if pronouns.as_ref().expect("Valid pronouns") != &r {
+                    println!("Pronoun changed detected!");
+                    // Construct the response json
+                    *pronouns = Some(r);
+                    let content: String = format!("Ellen's pronouns are test");
+                    // pronouns.as_deref().is_some());
+                    let map = json!({
+                    "content": content,
+                    "tts": false,
+                    });
+                    let result = ctx.http.send_message(specieschannelid, &map).await;
+                    match result {
+                        Ok(_) => {
+                            println!("Pronouns update sent to channel {}", specieschannelid);
+                            ();
+                        }
+
+                        Err(e) => {
+                            eprintln!("We couldn't send pronouns update {}", e);
+                            continue;
+                        }
+                    }
+                }
+            }
+            None => {
+                println!("Recieved no pronouns");
             }
         }
     }
