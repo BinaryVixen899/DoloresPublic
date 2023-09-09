@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{env, fmt};
 
+use futures_util::future::select;
 // Notion
 use notion::ids::BlockId;
 use notion::NotionApi;
@@ -30,7 +31,7 @@ use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 
 //Misc
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use chrono::prelude::*;
 use reqwest::header::ACCEPT;
 use serde_json::json;
@@ -46,7 +47,7 @@ struct Commands;
 // Refactored Species Loop logic, bot will now quit if an exception is encountered in Ready
 
 /*
-Arc is Atomically Reference Counted.
+Arc is Atomica lly Reference Counted.
 Atomic as in safe to access concurrently, reference counted as in will be automatically deleted when not need.
 Mutex means only one thread can access it at once, also provides interior mutability
 RefCell provides interior mutability (meaning you can modify the contents, whereas normally global values are read-only)
@@ -66,7 +67,7 @@ I need a mutex
 #[derive(Clone)]
 struct Ellen {
     species: Option<String>, // when the program has just started up it is possible for this to be None
-    pronouns: String,
+    pronouns: Option<String>,
 }
 
 // This is where we declare the typemapkeys that actually "transport" the values
@@ -86,6 +87,11 @@ struct ShardManagerContainer;
 
 impl TypeMapKey for ShardManagerContainer {
     type Value = Arc<Mutex<ShardManager>>;
+}
+
+struct StreamContainer;
+impl TypeMapKey for StreamContainer {
+    type Value = Arc<Mutex<Receiver<String>>>;
 }
 
 struct Handler;
@@ -144,6 +150,10 @@ impl EventHandler for Handler {
     ///Logic that executes when the "Ready" event is received. The most important thing here is the logic for posting my species
     async fn ready(&self, ctx: Context, mut ready: Ready) -> () {
         println!("{} is connected!", ready.user.name);
+        let mut Ellen = Ellen {
+            species: None,
+            pronouns: None,
+        };
 
         // If Serina's username is not Serina, change it. If that fails, call quit to kill the bot.
         if ready.user.name != String::from("Serina") {
@@ -247,6 +257,7 @@ impl EventHandler for Handler {
                 println!("Species channel created!");
                 let specieschannelid = channel.id.0;
                 println!("Starting species loop");
+                // TODO: Reconfigure this whole logic so that it not only includes pronouns but is just, not terrible
                 if let Err(e) = speciesloop(&ctx, specieschannelid).await {
                     eprintln!("Species loop failed: {}", e);
                     quit(&ctx).await;
@@ -259,21 +270,98 @@ impl EventHandler for Handler {
                 return ();
             }
         };
-        {
+        let specieschannelid = specieschannelid.expect("A valid species channel ID");
+        // Extract the pronounsrx
+        let pronounsrx: Arc<Mutex<Receiver<String>>> = {
+            let data_read = ctx.data.read().await;
+            data_read
+                .get::<StreamContainer>()
+                .expect("Expected SnepContainer in TypeMap.")
+                .clone()
+        };
+        // Destroy the mutex (and possibly the arc)
+
+        let pronouns = async {
+            println!("Starting pronouns stream");
+            let mut pronouns_reciever = pronounsrx.lock().await;
+            // this might not work because of the loop, we will see
+            let mut reciever_iter = pronouns_reciever.try_iter();
+            loop {
+                match reciever_iter.next() {
+                    Some(r) => {
+                        println!("Recieved pronouns!");
+                        if Ellen.pronouns == None {
+                            Ellen.pronouns = Some(r);
+                            println!("Initial pronouns set done! This should not happen twice in the same execution");
+                        } else if Ellen.pronouns.as_ref().expect("msg") == &r {
+                            println!("Pronouns are the same!");
+                            continue;
+                        } else if &Ellen.pronouns.expect("Valid pronouns") != &r {
+                            println!("Pronoun changed detected!");
+                            // Construct the response json
+                            let content = format!("Ellen's pronouns are {}", r);
+                            let map = json!({
+                            "content": content,
+                            "tts": false,
+                            });
+
+                            Ellen.pronouns = Some(r);
+                            let result = ctx.http.send_message(specieschannelid, &map).await;
+                            match result {
+                                Ok(_) => {
+                                    println!(
+                                        "Pronouns update sent to channel {}",
+                                        specieschannelid
+                                    );
+                                    ();
+                                }
+
+                                Err(e) => {
+                                    eprintln!("We couldn't send pronouns update {}", e);
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        println!("Recieved no pronouns");
+                    }
+                }
+            }
+        };
+
+        let species_loop = async {
             println!("Starting species loop");
-            if let Err(e) =
-                speciesloop(&ctx, specieschannelid.expect("A valid species channel ID")).await
-            {
-                eprintln!("Species loop failed: {}", e);
-                quit(&ctx).await;
-                return ();
+            if let Err(e) = speciesloop(&ctx, specieschannelid).await {
+                return Err(anyhow!(e));
             };
-        }
+            Ok(())
+        };
+        tokio::select! {
+            e = pronouns => {
+                match e {
+                    (_) => {
+                    }
+                }
+            }
+            e = species_loop => {
+                match e {
+                    Ok(_) => {
+                    }
+                    Err(e) => {
+                        eprintln!("Species loop failed: {}", e);
+                        quit(&ctx).await;
+                        eprintln!("An error occured while running Notion {:?}", e)
+                    }
+                }
+            }
+        };
+        println!("if I execute it is because one of the loops has finished!");
     }
 }
 
 async fn quit(ctx: &Context) {
-    let data = ctx.data.read().await;
+    let data: tokio::sync::RwLockReadGuard<'_, TypeMap> = ctx.data.read().await;
 
     if let Some(manager) = data.get::<ShardManagerContainer>() {
         manager.lock().await.shutdown_all().await;
@@ -408,7 +496,7 @@ async fn main() -> Result<()> {
     // Initializing the global Ellen object
     let ellen = Ellen {
         species: { None },
-        pronouns: { "She/Her".to_string() },
+        pronouns: { None },
     };
 
     // Get resonse messages , if this fails return None
@@ -433,7 +521,8 @@ async fn main() -> Result<()> {
      this is necessary in order to use next below because next takes a mutual reference NOT ownership
      Pinning it mutably moves it to the stack
     */
-    let (tx, _rx): (Sender<String>, Receiver<String>) = mpsc::channel();
+    let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
+    let stream_reciever = Arc::new(Mutex::new(rx));
     let stream = poll_notion(tx);
     pin_mut!(stream);
 
@@ -483,27 +572,12 @@ async fn main() -> Result<()> {
         Ok(())
     };
 
-    // let pronouns_stream =
-    // async {
-    //     match rx.recv() {
-    //         Ok(r) => {
-
-    //         },
-
-    //         Err(e) => {
-    //             println!("Could not set pronouns");
-    //             return Err(anyhow!(e));
-    //         }
-    //     }
-
-    // };
-
     // Clone an Arc pointer to species and increase our strong reference counts!
     let speciesclone = species.clone();
 
     // Pass the cloned pointers to Discord
     // If either method fails, fail the other and continue
-    let bot = discord(speciesclone, messagesmapclone);
+    let bot = discord(speciesclone, messagesmapclone, stream_reciever);
     tokio::select! {
         e = bot => {
             match e {
@@ -533,6 +607,7 @@ async fn main() -> Result<()> {
 async fn discord(
     species: Arc<Mutex<Option<String>>>,
     messages: Arc<Mutex<Option<HashMap<String, String>>>>,
+    stream_reciever: Arc<Mutex<Receiver<String>>>,
 ) -> Result<()> {
     dotenv::dotenv().expect("Doctor, where did you put the .env file?");
     if cfg!(feature = "dev") {
@@ -588,6 +663,7 @@ async fn discord(
         data.insert::<SnepContainer>(species);
         data.insert::<ResponseMessageContainer>(messages);
         data.insert::<ShardManagerContainer>(client.shard_manager.clone());
+        data.insert::<StreamContainer>(stream_reciever);
     }
 
     client.start().await?;
@@ -689,20 +765,19 @@ async fn watch_westworld(ctx: &Context, fetch_duration: Option<Duration>) {
         }
     };
 
-    loop {
-        let thing = watch_a_thing(watching_schedule.clone());
-        if cfg!(feature = "dev") {
-            ctx.set_activity(Activity::watching(
-                "🎶🎶🎶Snepgirl on a leash, you can feed her treats!🎶🎶🎶",
-            ))
-            .await;
-            tokio::time::sleep(Duration::from_secs(60)).await;
-        } else {
+    if cfg!(feature = "dev") {
+        ctx.set_activity(Activity::watching(
+            "🎶🎶🎶Snepgirl on a leash, you can feed her treats!🎶🎶🎶",
+        ))
+        .await;
+    } else {
+        loop {
+            let thing = watch_a_thing(watching_schedule.clone());
             ctx.set_activity(Activity::watching(thing)).await;
-        }
-        match fetch_duration {
-            Some(d) => tokio::time::sleep(Duration::from_secs(d.as_secs())).await,
-            None => tokio::time::sleep(Duration::from_secs(86400)).await,
+            match fetch_duration {
+                Some(d) => tokio::time::sleep(Duration::from_secs(d.as_secs())).await,
+                None => tokio::time::sleep(Duration::from_secs(86400)).await,
+            }
         }
     }
 }
@@ -832,6 +907,7 @@ fn poll_notion(tx: Sender<String>) -> impl Stream<Item = Result<String>> {
                 yield species;
             }
             tx.send(pronouns)?;
+            println!("Sent pronouns!");
 
             tokio::time::sleep(sleep_time).await;
         }
