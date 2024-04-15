@@ -1,0 +1,15 @@
+[Unit]
+Description = "Serena as a service"
+After=network.target
+StartLimitIntervalSec=300
+StartLimitIntervalSec=60
+
+[Service]
+ExecStart=/usr/bin/Dolores
+KillMode=control-group
+Restart=always
+RestartSec=1
+Type=simple
+
+[Install]
+WantedBy=multi-user.target
