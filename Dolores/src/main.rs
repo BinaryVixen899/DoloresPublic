@@ -534,7 +534,9 @@ async fn discord(
     species: Arc<Mutex<Option<String>>>,
     messages: Arc<Mutex<Option<HashMap<String, String>>>>,
 ) -> Result<()> {
-    dotenv::dotenv().expect("Doctor, where did you put the .env file?");
+    let config_path = "/etc/serina/.env";
+    dotenv::from_path(config_path).expect("Doctor, where did you put the .env file?");
+
     if cfg!(feature = "dev") {
         println!("DEVLORES ACTIVATED!");
     }
@@ -839,7 +841,7 @@ fn poll_notion(tx: Sender<String>) -> impl Stream<Item = Result<String>> {
 }
 
 fn get_phrases() -> Result<HashMap<std::string::String, std::string::String>> {
-    if let Ok(phrases) = read_lines("./phrases.txt") {
+    if let Ok(phrases) = read_lines("/etc/serina/phrases.txt") {
         let phrases: Vec<String> = phrases.filter_map(|f| f.ok()).collect();
         // this consumes the iterator, as rust-by-example notes
         // although this should also be obvious imo
