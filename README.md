@@ -1,11 +1,11 @@
-# Dolores
+# Serina
 A bot for my personal discord server
 
 # Dev Mode 
-When the dev feature is activated, Dolores switches her behavior. 
-Instead of posting in the #speciesupdates channel, Dolores posts in the #bottest channel.
-Additionally, Dolores sets her activity to "Watching Westworld (1973)"
-Multiple instances of Dolores can be connected to a server at the same time, although this may change as it is entirely dependent on the Discord API. 
+When the dev feature is activated, Serina switches her behavior. 
+Instead of posting in the #speciesupdates channel, Serina posts in the #bottest channel.
+Additionally, Serina sets her activity to "Watching Westworld (1973)"
+Multiple instances of Serina can be connected to a server at the same time, although this may change as it is entirely dependent on the Discord API. 
 Please note that Devlores will not respond for any commands issued over DM.
 
 # TO DOS
