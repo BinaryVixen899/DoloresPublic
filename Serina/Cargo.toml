@@ -21,6 +21,7 @@ futures-util = "0.3"
 anyhow = "1.0.68"
 notion = "0.5.1"
 chrono = "0.4.24"
+uncased = "0.9.10"
 
 [features]
 default = []
