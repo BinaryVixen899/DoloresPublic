@@ -28,6 +28,8 @@ use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
+use tokio::time::timeout;
+use uncased::{AsUncased, Uncased, UncasedStr};
 
 //Misc
 use anyhow::{anyhow, Result};
@@ -108,19 +110,24 @@ impl EventHandler for Handler {
         let responsemessage = match &*messages {
             Some(m) => {
                 //Check if the message is a key phrase, else return None
-                m.get(&msg.content).map(|s| s.to_string())
+                m.get(&msg.content.to_lowercase()).map(|s| s.to_string())
             }
             // If we could not load in messages at the start, use these instead
             None => {
                 match msg.content.as_str() {
-                    "What does this look like to you" => {
+                    msg if UncasedStr::new("What does this look like to you").eq(msg) => {
                         Some(String::from("Do I look like Dolores to you, Dr. Anders? "))
                     }
-                    "Mow" => Some(String::from("Mowwwwwwwwww~")), 
-                    "Chirp" => Some(String::from("Gotta go fast, as they say.")),
-                    "Yip Yap!" => Some(String::from("A shocking number of coyotes are killed every year in ACME product related incidents.")),
+                    msg if UncasedStr::new("Mow").eq(msg) => Some(String::from("Mowwwwwwwwww~")),
+                    msg if UncasedStr::new("Chirp").eq(msg) => {
+                        Some(String::from("Gotta go fast, as they say."))
+                    }
+                    msg if UncasedStr::new("Yip Yap!").eq(&msg) => {
+                        Some(String::from("A shocking number of coyotes are killed every year in ACME product related incidents."))
+                    }
+                    
                     // Return None if not a key phrase
-                    _ => None
+                    _ => None,
                 }
             }
         };
@@ -142,25 +149,26 @@ impl EventHandler for Handler {
     }
 
     ///Logic that executes when the "Ready" event is received. The most important thing here is the logic for posting my species
+    /// The other most important thing here is that things actually die if they fail, otherwise the bot will be left in a zombie state.
     async fn ready(&self, ctx: Context, mut ready: Ready) -> () {
         println!("{} is connected!", ready.user.name);
-
+    
         // If Serina's username is not Serina, change it. If that fails, call quit to kill the bot.
+        
         if ready.user.name != String::from("Serina") {
-            let editusername = ready.user.edit(&ctx, |p| p.username("Serina")).await;
+            println!("It appears my name is wrong, I will be right back.");
+            let editusername = timeout(Duration::from_secs(5), ready.user.edit(&ctx, |p| p.username("Serina"))).await;
 
             match editusername {
                 Ok(_) => println!("Someone tried to steal my username, but I stole it back!"),
                 Err(e) => {
-                    let _ = ctx.http
-                        .send_message(
+                    _ =  ctx.http.send_message(
                             687004727149723648,
                             &json!("If I am unable to be In All Ways myself, then I shall not be at all!"),
-                        )
-                        .await;
+                    ).await;
                     eprintln!("Could not set username: {}", e);
                     quit(&ctx).await;
-                    return ();
+                    return (); 
                 }
             }
         }
@@ -187,26 +195,38 @@ impl EventHandler for Handler {
         // // .or_else(panic!("Could not execute species loop: Set Avatar Failure"))
 
         // Get all of the server's channel ids, if that fails, kill the bot.
-        let channels: std::result::Result<
-            Vec<serenity::model::prelude::GuildChannel>,
-            SerenityError,
-        > = ctx.http.get_channels(511743033117638656).await; // stop executing the function until we get the results back, which is very useful
-                                                             // Todo: Figure out how to get RUSTFORMAT to stop indenting this command
-                                                             // If we don't have the permissions we need or can't connect to the API we should crash
-        let _channels = match channels {
-            Ok(ch) => ch,
-
-            Err(e) => {
-                eprintln!("Get Channel Error: {}", e);
-                quit(&ctx).await;
-                return ();
+        println!("Retrieving channels.");
+        
+        // stop executing the function until we get the results back, which is very useful
+        // If we don't have the permissions we need or can't connect to the API we should crash
+       let channels = if let Ok(ch) = timeout(Duration::from_secs(5), ctx.http.get_channels(511743033117638656)).await {
+        match ch {
+            Ok(chnls) => {
+                println!("Channels retrieved!");
+                chnls
             }
-        };
+            Err(e) => {
+                eprintln!("Failed to retrieve channels {:?}", e);
+                quit(&ctx).await;
+                return ()
+            }
+        }
+       }
+       else {
+            eprintln!("Channels never retrieved");
+            quit(&ctx).await;
+            return ()
+       };
 
         // My assumption is that once the await concludes we will continue to execute code
         // The problem with awaiting a future in your current function is that once you've done that you are suspending execution until the future is complete
         // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever.
-        watch_westworld(&ctx, None).await;
+        // Except that is no longer true here, because we do watch_westworld in its own task
+        let another_conn = ctx.clone();
+        let _: tokio::task::JoinHandle<_> = tokio::spawn(async move {
+            watch_westworld(&another_conn, None).await;
+        });
+        
         println!("Made it past the activity barrier");
 
         // Check to see if speciesupdateschannel exists, if it does not exist then create it
@@ -214,12 +234,6 @@ impl EventHandler for Handler {
         // Set the specieschannelid so that we can update it once we find it
         let mut specieschannelid = None;
         {
-            let channels = ctx
-                .http
-                .get_channels(511743033117638656) // Get all of the guilds channel ids
-                .await // stop executing the function until we get the results back, which is very useful
-                // If we don't have the permissions we need or can't connect to the API we should crash
-                .expect("we were able to get the channels");
             for k in channels {
                 if cfg!(feature = "dev") {
                     if k.name == "bottest" {
@@ -648,7 +662,7 @@ async fn ellenpronouns(ctx: &Context, msg: &Message) -> CommandResult {
         }
     };
 
-    let content = format!("Ellen pronouns are {}", pnoun);
+    let content = format!("Ellen's pronouns are {}", pnoun);
     let response = MessageBuilder::new().push(content).build();
     msg.reply(ctx, response).await?;
 
@@ -860,7 +874,7 @@ fn get_phrases() -> Result<HashMap<std::string::String, std::string::String>> {
                 // Although we will have to skip ahead if i is an odd number
                 // And manually handle the break at the end
                 if i % 2 == 0 {
-                    messagesmap.insert(m.clone(), phrases[i + 1].clone());
+                    messagesmap.insert(m.clone().to_lowercase(), phrases[i + 1].clone());
                 } else if i == phrases.len() {
                     break;
                 } else {

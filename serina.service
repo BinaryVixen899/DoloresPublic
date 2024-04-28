@@ -5,7 +5,7 @@ StartLimitIntervalSec=300
 StartLimitIntervalSec=60
 
 [Service]
-ExecStart=/usr/bin/Dolores
+ExecStart=/usr/bin/serina
 KillMode=control-group
 Restart=always
 RestartSec=1
