@@ -39,7 +39,7 @@ Next, run the following command from the root of the folder:
 `cp phrases.txt /etc/serina/`
 
 Third, if you have never installed Serina before, you will need to do something along the lines of...
-`cp serina.service /etc/systemd/system/serina.service && sudo systemctl daemon-reload && sudo systemctl start serina.service && sudo systemctl enable serina.service`
+`sudo cp serina.service /etc/systemd/system/serina.service && sudo systemctl daemon-reload && sudo systemctl start serina.service && sudo systemctl enable serina`
 
 And finally
 `cd Serina && cargo build --release && sudo mv target/release/Serina /usr/bin/serina`
