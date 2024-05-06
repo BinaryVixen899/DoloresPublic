@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{env, fmt};
 
+use futures_util::future::join_all;
 // Notion
 use notion::ids::BlockId;
 use notion::NotionApi;
@@ -21,6 +22,7 @@ use serenity::model::gateway::Ready;
 use serenity::model::prelude::{ChannelId, UserId};
 use serenity::prelude::*;
 use serenity::utils::MessageBuilder;
+
 //AsyncandConcurrency
 use async_stream::try_stream;
 use futures_core::stream::Stream;
@@ -40,6 +42,7 @@ use std::fs::File;
 use std::io::{self, BufRead};
 use std::panic;
 use std::path::Path;
+use rand::seq::SliceRandom;
 
 #[group]
 #[commands(ellenpronouns, ellenspecies /*fronting*/)]
@@ -88,6 +91,11 @@ struct ShardManagerContainer;
 
 impl TypeMapKey for ShardManagerContainer {
     type Value = Arc<Mutex<ShardManager>>;
+}
+
+struct ChannelManagerContainer;
+impl TypeMapKey for ChannelManagerContainer {
+    type Value = Arc<Mutex<Receiver<String>>>;
 }
 
 struct Handler;
@@ -152,7 +160,6 @@ impl EventHandler for Handler {
     /// The other most important thing here is that things actually die if they fail, otherwise the bot will be left in a zombie state.
     async fn ready(&self, ctx: Context, mut ready: Ready) -> () {
         println!("{} is connected!", ready.user.name);
-    
         // If Serina's username is not Serina, change it. If that fails, call quit to kill the bot.
         
         if ready.user.name != String::from("Serina") {
@@ -273,17 +280,60 @@ impl EventHandler for Handler {
                 return ();
             }
         };
-        {
+    
+        let spc = specieschannelid.expect("A valid species channel ID").clone();
+        let ctx_clone_one = ctx.clone();
+        let ctx_clone_two = ctx.clone();
+       let species = async move {
             println!("Starting species loop");
             if let Err(e) =
-                speciesloop(&ctx, specieschannelid.expect("A valid species channel ID")).await
+                speciesloop(&ctx_clone_one, spc ).await
             {
                 eprintln!("Species loop failed: {}", e);
-                quit(&ctx).await;
+                quit(&ctx_clone_one).await;
+                return ();
+            };
+        };
+        let species_handle = tokio::spawn(species);
+        
+
+
+        let pronouns_handle = tokio::spawn(async move {
+            println!("Starting pronouns loop");
+            if let Err(e) = 
+                pronounsloop(&ctx_clone_two, specieschannelid.expect("A valid updates channel ID")).await
+            {
+                eprintln!("Pronouns loop failed: {}", e);
+                quit(&ctx_clone_two).await;
                 return ();
             };
         }
+    );
+    
+    match tokio::try_join!(species_handle, pronouns_handle) {
+        Ok(_) => {
+
+        }
+        Err(_) => {
+            
+        }
+
     }
+        
+    }
+    
+    // async fn main() {
+    //     let handle1 = tokio::spawn(do_stuff_async());
+    //     let handle2 = tokio::spawn(more_async_work());
+    //     match tokio::try_join!(flatten(handle1), flatten(handle2)) {
+    //         Ok(val) => {
+    //             // do something with the values
+    //         }
+    //         Err(err) => {
+    //             println!("Failed with {}.", err);
+    //         }
+    //     }
+    // }
 }
 
 async fn quit(ctx: &Context) {
@@ -397,6 +447,107 @@ async fn speciesloop(ctx: &Context, specieschannelid: u64) -> Result<()> {
     }
 }
 
+// It would be WAY more readable to just go ahead and do both species and pronouns in one function but I want to get this up as soon as possible 
+async fn pronounsloop(ctx: &Context, updates_channel_id: u64) -> Result<()> {
+// None of this makes sense because we will never recieve none
+    let rx: Arc<Mutex<Receiver<String>>> = {
+        let data_read: tokio::sync::RwLockReadGuard<'_, TypeMap> = ctx.data.read().await;
+        data_read
+            .get::<ChannelManagerContainer>()
+            .expect("Expected ResponseMessageContainer in TypeMap.")
+            .clone()
+    };
+    let rx = rx.lock().await;
+
+    let mut lastpronouns: Option<String> = None;
+    
+    
+        while let Ok(prnouns) = rx.recv()  {
+            // This is where I would put witty comments, IF I HAD ANY
+            let pronouns: Vec<&str> = prnouns.split('/').collect();
+            // oh no, this will create a new vec every time...
+            assert_ne!(pronouns.last(), None, "An invalid value was entered for pronouns");
+            // get a union of these
+            assert_eq!(pronouns.len(), 2, "An invalid amount was entered for the pronouns: {:#?}", pronouns);
+
+            let pronoun = *pronouns.choose(&mut rand::thread_rng()).expect("Able to take a reference to a pronoun");
+
+            let name_and_comment: (Option<&str>, Option<&str>) = match pronoun.to_lowercase().as_str() { 
+                "she"|"her" => {
+                    (Some("Ellen"), Some("I am woman hear me roar~ Or mow, I suppose."))
+                },
+
+                "shi"|"hir" => {
+                    (Some("Ellen"), Some("Showing your Chakat roots, I assume."))
+                },
+
+                "he"|"him" => {
+                    (Some("Ev"), Some("Oh right, you are genderfluid!"))
+                },
+
+                "they"|"them" => {
+                    (Some("Ev"), Some("More like... Wait for it. I will calculate a joke..."))
+                },
+                "ey"|"em" => {
+                    (Some("Ev"), Some("A fine choice."))
+                }
+                _ => {
+                    (Some("Ev"), Some("Oh! A new set of pronouns! Time to finally update the code to take live input!"))
+                }
+            };
+            let announcement = format!("{}'s pronouns are {}.\n", name_and_comment.0.unwrap(), prnouns);
+            let comment = format!("{}", name_and_comment.1.unwrap());
+            let message = announcement + comment.as_str();
+            let map = json!({
+                "content": message,
+                "tts": false,
+            });
+            let prnouns = Some(prnouns);
+            if lastpronouns.as_ref() != prnouns.as_ref()  {
+                if lastpronouns == None {
+                    lastpronouns = prnouns;
+                    println!("Initial Pronouns loop run");
+                    continue
+                }
+                lastpronouns = prnouns;                
+                match ctx.http.send_message(updates_channel_id, &map).await {
+                    Ok(_) => {
+                        println!("Pronouns update sent to updates channel!");
+                    }
+                    Err(e) => {
+                        eprintln!("We couldn't send the pronouns update to the channel: {}", e);
+                    }
+    
+                }
+                
+            }
+            else {
+                lastpronouns = prnouns;
+            }
+        }
+        
+    
+    return Err(anyhow!("Pronouns loop failed!"));
+}
+
+
+
+
+           
+            // let map = json!({
+            //     "content": content,
+            //     "tts": false,
+            //     });
+         
+    //    Err(e) => {
+    //        println!("Could not set pronouns");
+    //        return Err(anyhow!(e));
+           
+    //    }
+
+
+
+
 // Unused logic for automatically handling members joining
 // async fn reaction_add(&self, _ctx: Context, _add_reaction: Reaction) {
 //     // When someone new joins, if an admin adds a check reaction bring them in and give them roles
@@ -447,17 +598,18 @@ async fn main() -> Result<()> {
      this is necessary in order to use next below because next takes a mutual reference NOT ownership
      Pinning it mutably moves it to the stack
     */
-    let (tx, _rx): (Sender<String>, Receiver<String>) = mpsc::channel();
+    let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
     let stream = poll_notion(tx);
     pin_mut!(stream);
 
     //Create an ARC to species, and a mutex as well
     //We will eventually go over thread boundaries, after all
     let species = Arc::new(Mutex::new(ellen.species));
-    // let pronouns = Arc::new(Mutex::new(ellen.pronouns));
+    let pronounsrxclone = Arc::new(Mutex::new(rx));
 
     // assigning the future to a variable allows us to basically make a function
     //TODO: Refactor this whole thing
+    // TODO: Handle when we get none, because the unfortunate reality here is that if species stream dies we will not know, care, or do anything because we are not handling when it stops returning values
     let speciesstream = async {
         // While the stream is still giving us values, wait until we have the next value
         while let Some(item) = stream.next().await {
@@ -497,27 +649,12 @@ async fn main() -> Result<()> {
         Ok(())
     };
 
-    // let pronouns_stream =
-    // async {
-    //     match rx.recv() {
-    //         Ok(r) => {
-
-    //         },
-
-    //         Err(e) => {
-    //             println!("Could not set pronouns");
-    //             return Err(anyhow!(e));
-    //         }
-    //     }
-
-    // };
-
     // Clone an Arc pointer to species and increase our strong reference counts!
     let speciesclone = species.clone();
 
     // Pass the cloned pointers to Discord
     // If either method fails, fail the other and continue
-    let bot = discord(speciesclone, messagesmapclone);
+    let bot = discord(speciesclone, messagesmapclone, pronounsrxclone);
     tokio::select! {
         e = bot => {
             match e {
@@ -547,6 +684,7 @@ async fn main() -> Result<()> {
 async fn discord(
     species: Arc<Mutex<Option<String>>>,
     messages: Arc<Mutex<Option<HashMap<String, String>>>>,
+    rx: Arc<Mutex<Receiver<String>>>
 ) -> Result<()> {
     let config_path = "/etc/serina/.env";
     dotenv::from_path(config_path).expect("Doctor, where did you put the .env file?");
@@ -604,6 +742,7 @@ async fn discord(
         data.insert::<SnepContainer>(species);
         data.insert::<ResponseMessageContainer>(messages);
         data.insert::<ShardManagerContainer>(client.shard_manager.clone());
+        data.insert::<ChannelManagerContainer>(rx.clone());
     }
 
     client.start().await?;
