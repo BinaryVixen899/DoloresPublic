@@ -5,10 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{env, fmt};
 
+use futures_util::future::join_all;
 // Notion
 use notion::ids::BlockId;
 use notion::NotionApi;
 
+use once_cell::sync::Lazy;
+use opentelemetry_sdk::logs::Config;
+use opentelemetry_sdk::runtime;
 //Serenity
 use serenity::async_trait;
 use serenity::client::bridge::gateway::ShardManager;
@@ -29,21 +33,25 @@ use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
+use tokio::time::timeout;
+use uncased::{AsUncased, Uncased, UncasedStr};
 
 //Honeycomb
 // TD: read in the honeycomb token as a static or constant variable
-use opentelemetry::global::{logger_provider, shutdown_logger_provider};
+use opentelemetry::
+{
+    global,
+    Key, KeyValue
+};
 use opentelemetry::logs::LogError;
-use opentelemetry::KeyValue;
-use opentelemetry_appender_tracing::layer;
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::runtime as other_runtime;
 use opentelemetry_sdk::{
-    logs::{Config, LoggerProvider},
+    logs::{self as sdklogs},
     Resource,
 };
 
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, trace, trace_span, warn};
 use tracing_subscriber::prelude::*;
 
 //Misc
@@ -55,10 +63,18 @@ use serde_json::json;
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
+use rand::seq::SliceRandom;
 
 // Constants
 const ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 const HEADER_PREFIX: &str = "OTEL_EXPORTER_";
+
+static RESOURCE: Lazy<Resource> = Lazy::new(|| {
+    Resource::new(vec![KeyValue::new(
+        opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+        "dolores",
+    )])
+});
 
 #[group]
 #[commands(ellenpronouns, ellenspecies /*fronting*/)]
@@ -108,6 +124,11 @@ impl TypeMapKey for ShardManagerContainer {
     type Value = Arc<Mutex<ShardManager>>;
 }
 
+struct ChannelManagerContainer;
+impl TypeMapKey for ChannelManagerContainer {
+    type Value = Arc<Mutex<Receiver<String>>>;
+}
+
 struct Handler;
 
 #[async_trait]
@@ -124,29 +145,39 @@ impl EventHandler for Handler {
         };
         // Really don't like that we have to do this EVERY TIME. I'm not even sure this is feasible tbh. Worried about blocking the thread
         let messages = messages.lock().await;
-        trace!("Messages lock obtained!");
+        let span = trace_span!(target: "messagemap", "message");
+        let responsemessage = span.in_scope(|| {
+
+        trace!(name: "messagesmap", "Messages lock obtained!");
         /* Dereference messages to get through the MutexGuard, then take a reference since we can't move the content */
         let responsemessage = match &*messages {
             Some(m) => {
-                info!("Using messages map to respond!");
+                info!(name: "messagesmap", "Using messages map to respond!");
                 //Check if the message is a key phrase, else return None
-                m.get(&msg.content).map(|s| s.to_string())
+                m.get(&msg.content.to_lowercase()).map(|s| s.to_string())
             }
             // If we could not load in messages at the start, use these instead
             None => {
-                info!("No messages map, using default map!");
+                info!(name: "messagesmap", "No messages map, using default map!");
                 match msg.content.as_str() {
-                    "What does this look like to you" => {
+                    msg if UncasedStr::new("What does this look like to you").eq(msg) => {
                         Some(String::from("Do I look like Dolores to you, Dr. Anders? "))
                     }
-                    "Mow" => Some(String::from("Mowwwwwwwwww~")), 
-                    "Chirp" => Some(String::from("Gotta go fast, as they say.")),
-                    "Yip Yap!" => Some(String::from("A shocking number of coyotes are killed every year in ACME product related incidents.")),
+                    msg if UncasedStr::new("Mow").eq(msg) => Some(String::from("Mowwwwwwwwww~")),
+                    msg if UncasedStr::new("Chirp").eq(msg) => {
+                        Some(String::from("Gotta go fast, as they say."))
+                    }
+                    msg if UncasedStr::new("Yip Yap!").eq(&msg) => {
+                        Some(String::from("A shocking number of coyotes are killed every year in ACME product related incidents."))
+                    }
+                    
                     // Return None if not a key phrase
-                    _ => None
+                    _ => None,
                 }
             }
         };
+        responsemessage
+    });
 
         match responsemessage {
             Some(rm) => {
@@ -154,13 +185,19 @@ impl EventHandler for Handler {
                 // let responseref = &response.clone();
 
                 if let Err(why) = msg.channel_id.say(&ctx.http, &response).await {
-                    error!("Matched an animal noise, but failed to respond {:?}", why);
+                    {
+                        let _test = span.enter();
+                        error!(name: "messagesmap", error_text=?why, "Matched an animal noise, but failed to respond {:#?}", why);
+                    }
                     let response = MessageBuilder::new()
                         .push("Yes, yes, animal noises...")
                         .build();
                     msg.channel_id.say(&ctx.http, response).await.expect("Able to respond with another phrase when erroring out on animal noise response");
                 } else {
-                    info!("Response to keyword: {:?}", &response);
+                    {
+                        let _test = span.enter();
+                        info!(name: "messagesmap", response = ?response, "Response to keyword: {}", &response);
+                    }
                 }
             }
             None => (),
@@ -168,25 +205,32 @@ impl EventHandler for Handler {
     }
 
     ///Logic that executes when the "Ready" event is received. The most important thing here is the logic for posting my species
+    /// The other most important thing here is that things actually die if they fail, otherwise the bot will be left in a zombie state.
     async fn ready(&self, ctx: Context, mut ready: Ready) -> () {
-        info!("{} is connected!", &ready.user.name);
+        info!(name: "ready", username=%ready.user.name, "{} is connected!", &ready.user.name);
 
         // If Serina's username is not Serina, change it. If that fails, call quit to kill the bot.
+        
         if ready.user.name != String::from("Serina") {
-            let editusername = ready.user.edit(&ctx, |p| p.username("Serina")).await;
-
+            warn!(name: "ready_username", "Username is not Serina!");
+            info!("It appears my name is wrong, I will be right back.");
+            debug!(name: "ready_username", "Setting username back to Serina!!");
+            let editusername = timeout(Duration::from_secs(5), ready.user.edit(&ctx, |p| p.username("Serina"))).await;
+            
             match editusername {
-                Ok(_) => warn!("Someone tried to steal my username, but I stole it back!"),
+                Ok(_) => {
+                    debug!(name: "ready_username", "Set username back to Serina!");
+                    warn!(name: "ready_username", "Someone tried to steal my username, but I stole it back!")
+                }
                 Err(e) => {
-                    let _ = ctx.http
-                        .send_message(
+                    _ =  ctx.http.send_message(
                             687004727149723648,
                             &json!("If I am unable to be In All Ways myself, then I shall not be at all!"),
                         )
                         .await;
-                    error!("Could not set username: {}", e);
+                    error!(name: "ready_username", error_text=?e, "Could not set username: {:#?}", e);
                     quit(&ctx).await;
-                    return ();
+                    return (); 
                 }
             }
         }
@@ -213,54 +257,52 @@ impl EventHandler for Handler {
         // // .or_else(panic!("Could not execute species loop: Set Avatar Failure"))
 
         // Get all of the server's channel ids, if that fails, kill the bot.
-        info!("Retrieving channels!");
-        let channels: std::result::Result<
-            Vec<serenity::model::prelude::GuildChannel>,
-            SerenityError,
-        > = ctx.http.get_channels(511743033117638656).await; // stop executing the function until we get the results back, which is very useful
-                                                             // Todo: Figure out how to get RUSTFORMAT to stop indenting this command
-                                                             // If we don't have the permissions we need or can't connect to the API we should crash
-        let _channels = match channels {
-            Ok(ch) => {
-                debug!("Channels: {:?}", ch);
-                ch
+       info!(name: "ready", "Retrieving channels!");
+       let channels = if let Ok(ch) = timeout(Duration::from_secs(5), ctx.http.get_channels(511743033117638656)).await {
+        match ch {
+            Ok(chnls) => {
+                info!(name: "ready_channel", "Channels retrieved!");
+                chnls
             }
-
             Err(e) => {
-                error!("Get Channel Error: {}", e);
+                error!(name: "ready_channel", error_text=?e, "Failed to retrieve channels {:#?}", e);
                 quit(&ctx).await;
-                return ();
+                return ()
             }
-        };
-        info!("Channels retrieved!");
+        }
+       }
+       else {
+            error!(name: "ready_channel", "Get Channel Error!");
+            quit(&ctx).await;
+            return ()
+       };
+       info!(name: "ready_channel", "Channels retrieved!");
 
         // My assumption is that once the await concludes we will continue to execute code
         // The problem with awaiting a future in your current function is that once you've done that you are suspending execution until the future is complete
         // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever.
-        watch_westworld(&ctx, None).await;
-        info!("Made it past the activity barrier");
+        // Except that is no longer true here, because we do watch_westworld in its own task
+        let another_conn = ctx.clone();
+        let _: tokio::task::JoinHandle<_> = tokio::spawn(async move {
+            watch_westworld(&another_conn, None).await;
+        });
+        
+        info!(name: "ready", "Made it past the activity barrier");
 
         // Check to see if speciesupdateschannel exists, if it does not exist then create it
         //If we cannot create it, then quit
         // Set the specieschannelid so that we can update it once we find it
         let mut specieschannelid = None;
         {
-            let channels = ctx
-                .http
-                .get_channels(511743033117638656) // Get all of the guilds channel ids
-                .await // stop executing the function until we get the results back, which is very useful
-                // If we don't have the permissions we need or can't connect to the API we should crash
-                .expect("we were able to get the channels");
-            debug!("Channels: {:?}", channels);
             for k in channels {
                 if cfg!(feature = "dev") {
                     if k.name == "bottest" {
-                        debug!("bottest cid: {:?}", k.id.0);
+                        debug!(name: "ready_channel", specieschannel=?k.id.0, "bottest cid: {:#?}", k.id.0);
                         specieschannelid = Some(k.id.0)
                     }
                 } else {
                     if k.name == "speciesupdates" {
-                        debug!("speciesupdatescid {:?}", k.id.0);
+                        debug!(name: "ready_channel", specieschannel=?k.id.0, "speciesupdatescid {:#?}", k.id.0);
                         specieschannelid = Some(k.id.0)
                     }
                 }
@@ -271,50 +313,93 @@ impl EventHandler for Handler {
         let mut map = JsonMap::new();
         if specieschannelid.is_none() {
             let json = json!("speciesupdates");
-            error!("Could not find speciesupdates channel, creating one!");
+            error!(name: "ready_channel", "Could not find speciesupdates channel, creating one!");
             map.insert("name".to_string(), json);
             if let Ok(channel) = ctx
                 .http
                 .create_channel(511743033117638656, &map, None)
                 .await
             {
-                info!("Species channel created!: {:?}", channel.id.0);
+                info!(name: "ready_channel", specieschannel=%channel.id.0, "Species channel created!: {}", channel.id.0);
                 let specieschannelid = channel.id.0;
-                info!("Starting species loop");
+                info!(name: "species_loop", "Starting species loop");
                 if let Err(e) = speciesloop(&ctx, specieschannelid).await {
-                    error!("Species loop failed: {}", e);
+                    error!(name: "species_loop", error_text=?e, "Species loop failed: {:#?}", e);
                     quit(&ctx).await;
                     return ();
                 }
             } else {
                 //TODO: If the request fails let's crash and tell someone to create it manually
-                error!("Could not create species channel");
+                error!(name: "species_loop", "Could not create species channel");
                 quit(&ctx).await;
                 return ();
             }
-            info!("Species loop started!");
+            info!(name: "species_loop", "Species loop started!");
         };
-        {
-            info!("Starting species loop");
+    
+        let spc = specieschannelid.expect("A valid species channel ID").clone();
+        let ctx_clone_one = ctx.clone();
+        let ctx_clone_two = ctx.clone();
+        let species = async move {
+        info!(name: "species_loop", "Starting species loop");
             if let Err(e) =
-                speciesloop(&ctx, specieschannelid.expect("A valid species channel ID")).await
+                speciesloop(&ctx_clone_one, spc ).await
             {
-                error!("Species loop failed: {}", e);
-                quit(&ctx).await;
+                error!(name: "species_loop", error_text=?e, "Species loop failed: {:#?}", e);
+                quit(&ctx_clone_one).await;
                 return ();
             };
-            info!("Species loop started!");
+        };
+        let species_handle = tokio::spawn(species);
+        
+
+
+        let pronouns_handle = tokio::spawn(async move {
+            info!("Starting pronouns loop");
+            if let Err(e) = 
+                pronounsloop(&ctx_clone_two, specieschannelid.expect("A valid updates channel ID")).await
+            {
+                error!(name: "pronouns_loop", error_text=?e, "Pronouns loop failed: {:#?}", e);
+                quit(&ctx_clone_two).await;
+                return ();
+            };
+            info!(name: "species_loop", "Species loop started!");
         }
+    );
+    
+    match tokio::try_join!(species_handle, pronouns_handle) {
+        Ok(_) => {
+
+        }
+        Err(_) => {
+            
+        }
+
     }
+        
+    }
+    
+    // async fn main() {
+    //     let handle1 = tokio::spawn(do_stuff_async());
+    //     let handle2 = tokio::spawn(more_async_work());
+    //     match tokio::try_join!(flatten(handle1), flatten(handle2)) {
+    //         Ok(val) => {
+    //             // do something with the values
+    //         }
+    //         Err(err) => {
+    //             println!("Failed with {}.", err);
+    //         }
+    //     }
+    // }
 }
 
 async fn quit(ctx: &Context) {
     let data = ctx.data.read().await;
 
     if let Some(manager) = data.get::<ShardManagerContainer>() {
-        warn!("Shutting down shards.");
+        warn!(name: "shutdown", "Shutting down shards.");
         manager.lock().await.shutdown_all().await;
-        warn!("All shards shutdown.")
+        warn!(name: "shutdown", "All shards shutdown.")
     }
 }
 async fn speciesloop(ctx: &Context, specieschannelid: u64) -> Result<()> {
@@ -328,42 +413,43 @@ async fn speciesloop(ctx: &Context, specieschannelid: u64) -> Result<()> {
             .expect("Expected SnepContainer in TypeMap.")
             .clone()
     };
-    info!("ARC obtained to species!");
+    info!(name: "species_loop", arc_count=%Arc::strong_count(&species), starting_arc_count=?Arc::strong_count(&species), "ARC obtained to species!");
 
     // Initially, lastspecies is None
     let mut lastspecies: Option<String> = None;
     // It is also possible for species to be None, if this is the case no message will be produced
-    info!("Starting species loop!");
+    info!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Starting species loop!");
     loop {
         // Get the current species
         // First we wait to get a lock to species, because mutexguard
         // After we get the lock, we get a reference to the Value
 
         // Nobody can update the value while we are locked
-        debug!("Species RC# {}", Arc::strong_count(&species));
-        let species = species.lock().await;
-        trace!("Species lock obtained");
+        debug!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Species RC# {:#?}", Arc::strong_count(&species));
+        let spcs = species.lock().await;
+        // #TODO: See if there is a way to check if the lock is still being held
+        trace!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Species lock obtained");
         // The reason why this works  is because as_ref() takes it out of the option WHILE KEEPING THE ORIGINAL
         // as_mut DESTROYS THE ORIGINAL
-        if lastspecies.as_ref() != species.as_ref() {
-            info!("Last species is {:?}", species);
-            info!("Current species is {:?}", species);
+        if lastspecies.as_ref() != spcs.as_ref() {
+            info!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Last species is {:#?}", spcs);
+            info!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Current species is {:#?}", spcs);
             // Skip the very first loop and ensure we do not post again until something has changed
             if lastspecies.as_ref() == None {
-                lastspecies = species.clone();
+                lastspecies = spcs.clone();
                 // TODO: Check if this just runs once
-                warn!("Lastspecies is none, skipping to next loop, this should only run once.");
+                warn!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Lastspecies is none, skipping to next loop, this should only run once.");
                 continue;
             }
-            debug!("Species changed to {:#?}!", species);
+            info!(name: "species_loop", species=?species, arc_count=%Arc::strong_count(&species), "Species changed to {:#?}!", species);
 
             // Copy the value of species out, dropping the guard and releasing the lock
-            let species = species
+            let speciescln = spcs
                 .as_ref()
                 .expect("Could clone the value of species!")
                 .clone();
             // The lock drops at this point, and the original species can presumably be updated
-            let wittycomment = match species.to_lowercase().as_str() {
+            let wittycomment = match speciescln.to_lowercase().as_str() {
                     "kitsune"| "狐" | "きつね" => {
                         Some("Someone is feeling foxy...")
                     },
@@ -395,12 +481,12 @@ async fn speciesloop(ctx: &Context, specieschannelid: u64) -> Result<()> {
             // Add a custom witty comment for certain species
             let content = match wittycomment {
                 Some(cmt) => {
-                    debug!("Species: {}, Witty Comment: {}", species, cmt);
-                    format!("Ellen is a {}.\n{}", species, cmt)
+                    debug!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Species: {:#?}, Witty Comment: {:#?}", speciescln, cmt);
+                    format!("Ellen is a {}.\n{}", speciescln, cmt)
                 }
                 None => {
-                    debug!("Species: {}", species);
-                    format!("{} {}", "Ellen is a", species)
+                    debug!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Species: {:#?}", speciescln);
+                    format!("{} {}", "Ellen is a", speciescln)
                 }
             };
 
@@ -409,28 +495,131 @@ async fn speciesloop(ctx: &Context, specieschannelid: u64) -> Result<()> {
             "content": content,
             "tts": false,
             });
-            info!("Species response constructed");
-            trace!("Species response {}", map);
+            info!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Species response constructed");
+            trace!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Species response {:#?}", map);
 
             // Send a message to the species channel with my species, also set lastspecies to the CLONED value of species. Continue the loop.
             match ctx.http.send_message(specieschannelid, &map).await {
                 Ok(_) => {
                     ();
-                    info!("Species response succesfully sent to {}!", specieschannelid);
-                    lastspecies = Some(species.clone());
+                    info!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Species response succesfully sent to {}!", specieschannelid);
+                    lastspecies = Some(speciescln.clone());
                     continue;
                 }
 
                 // Also continue on errors, but log them
                 Err(e) => {
-                    error!("We couldn't send the message to the specieschannel {}", e);
-                    lastspecies = Some(species.clone());
+                    error!(name: "species_loop", error_text=?e, arc_count=%Arc::strong_count(&species), "We couldn't send the message to the specieschannel {:#?}", e);
+                    lastspecies = Some(speciescln.clone());
                     continue;
                 }
             }
         }
     }
 }
+
+// It would be WAY more readable to just go ahead and do both species and pronouns in one function but I want to get this up as soon as possible 
+async fn pronounsloop(ctx: &Context, updates_channel_id: u64) -> Result<()> {
+// None of this makes sense because we will never recieve none
+    let rx: Arc<Mutex<Receiver<String>>> = {
+        let data_read: tokio::sync::RwLockReadGuard<'_, TypeMap> = ctx.data.read().await;
+        data_read
+            .get::<ChannelManagerContainer>()
+            .expect("Expected ResponseMessageContainer in TypeMap.")
+            .clone()
+    };
+    let rx = rx.lock().await;
+
+    let mut lastpronouns: Option<String> = None;
+    
+    
+        while let Ok(prnouns) = rx.recv()  {
+            // This is where I would put witty comments, IF I HAD ANY
+            let pronouns: Vec<&str> = prnouns.split('/').collect();
+            // oh no, this will create a new vec every time...
+            assert_ne!(pronouns.last(), None, "An invalid value was entered for pronouns");
+            // get a union of these
+            assert_eq!(pronouns.len(), 2, "An invalid amount was entered for the pronouns: {:#?}", pronouns);
+
+            let pronoun = *pronouns.choose(&mut rand::thread_rng()).expect("Able to take a reference to a pronoun");
+
+            let name_and_comment: (Option<&str>, Option<&str>) = match pronoun.to_lowercase().as_str() { 
+                "she"|"her" => {
+                    (Some("Ellen"), Some("I am woman hear me roar~ Or mow, I suppose."))
+                },
+
+                "shi"|"hir" => {
+                    (Some("Ellen"), Some("Showing your Chakat roots, I assume."))
+                },
+
+                "he"|"him" => {
+                    (Some("Ev"), Some("Oh right, you are genderfluid!"))
+                },
+
+                "they"|"them" => {
+                    (Some("Ev"), Some("More like... Wait for it. I will calculate a joke..."))
+                },
+                "ey"|"em" => {
+                    (Some("Ev"), Some("A fine choice."))
+                }
+                _ => {
+                    (Some("Ev"), Some("Oh! A new set of pronouns! Time to finally update the code to take live input!"))
+                }
+            };
+            let announcement = format!("{}'s pronouns are {}.\n", name_and_comment.0.unwrap(), prnouns);
+            let comment = format!("{}", name_and_comment.1.unwrap());
+            let message = announcement + comment.as_str();
+            let map = json!({
+                "content": message,
+                "tts": false,
+            });
+            let prnouns = Some(prnouns);
+            info!(name: "pronouns_loop", pronouns=?prnouns, lastpronouns=?lastpronouns, "Checking Pronouns!");
+            if lastpronouns.as_ref() != prnouns.as_ref()  {
+                if lastpronouns == None {
+                    lastpronouns = prnouns;
+                    info!(name: "pronouns_loop", "Initial Pronouns loop run");
+                    continue
+                }
+                lastpronouns = prnouns;                
+                match ctx.http.send_message(updates_channel_id, &map).await {
+                    Ok(_) => {
+                        info!(name: "pronouns_loop", "Pronouns update sent to updates channel!");
+                    }
+                    Err(e) => {
+                        error!(name: "pronouns_loop", error_text=?e, "We couldn't send the pronouns update to the channel: {:#?}", e);
+                    }
+    
+                }
+                
+            }
+            else {
+                trace!(name: "pronouns_loop","Pronouns stayed the same!");
+                lastpronouns = prnouns;
+            }
+        }
+        
+    
+    return Err(anyhow!("Pronouns loop failed!"));
+}
+
+
+
+
+           
+            // let map = json!({
+            //     "content": content,
+            //     "tts": false,
+            //     });
+         
+    //    Err(e) => {
+    //        println!("Could not set pronouns");
+    //        return Err(anyhow!(e));
+           
+    //    }
+
+
+
 
 // Unused logic for automatically handling members joining
 // async fn reaction_add(&self, _ctx: Context, _add_reaction: Reaction) {
@@ -456,14 +645,14 @@ async fn speciesloop(ctx: &Context, specieschannelid: u64) -> Result<()> {
 async fn main() -> Result<()> {
     // Initializing the global Ellen object
     // Sets the global loggerprovider
-    let _ = init_logs();
+
 
     // Get the global loggerprovider here
     // Okay that is cool, how is that done?!
     // Arc gets passed around
-    let logger_provider = logger_provider();
+    let logger_provider = init_logs().unwrap();
     // Except now we have to create a new OpenTelemetryLogBridge
-    let honeycomb = layer::OpenTelemetryTracingBridge::new(&logger_provider);
+    let honeycomb = OpenTelemetryTracingBridge::new(&logger_provider);
 
     let filter = tracing_subscriber::EnvFilter::from_default_env();
     let anotherfilter = tracing_subscriber::EnvFilter::from_default_env();
@@ -479,24 +668,25 @@ async fn main() -> Result<()> {
     //
     // log::set_max_level(Level::Info.to_level_filter());
 
-    info!("Logging started");
+    info!(name: "main", "Logging started");
     let ellen = Ellen {
         species: { None },
         pronouns: { "She/Her".to_string() },
     };
-    debug!("Initial ellen settings: {:?}", ellen);
+    debug!(name: "main", species=?ellen.species, pronouns=?ellen.pronouns, "Initial ellen settings: {:?}", ellen);
+    // change to % to get non string version
 
     // Get response messages , if this fails return None
     let messages = get_phrases();
     let messagesmap = match messages {
         Ok(m) => {
-            info!("Messages Map Constructed");
-            debug!("The messages map consists of {:?}", m);
+            info!(name: "messagesmap", "Messages Map Constructed");
+            debug!(name: "messagesmap", "The messages map consists of {:?}", m);
             Some(m)
         }
         Err(e) => {
-            error!("Could not construct messages map because: {}", e);
-            error!("Falling back to default messages map!");
+            error!(name: "messagesmap", error_text=?e, "Could not construct messages map because: {:#?}", e);
+            error!(name: "messagesmap", error_text=?e, "Falling back to default messages map!");
             None
         }
     };
@@ -507,30 +697,32 @@ async fn main() -> Result<()> {
     let messagesmap = Arc::new(Mutex::new(messagesmap));
     // Clone that ARC, creating another one
     let messagesmapclone = messagesmap.clone();
-    info!("Prepped messaging map for transfer");
+    info!(name: "messagesmap", "Prepped messaging map for transfer");
     /*  Introducing the stream and pinning it mutably,
      this is necessary in order to use next below because next takes a mutual reference NOT ownership
      Pinning it mutably moves it to the stack
     */
-    let (tx, _rx): (Sender<String>, Receiver<String>) = mpsc::channel();
+    let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
     let stream = poll_notion(tx);
     pin_mut!(stream);
-    info!("poll_notion stream created!");
+    info!(name: "poll_notion", "poll_notion stream created!");
 
     //Create an ARC to species, and a mutex as well
     //We will eventually go over thread boundaries, after all
     let species = Arc::new(Mutex::new(ellen.species));
-    // let pronouns = Arc::new(Mutex::new(ellen.pronouns));
+    let pronounsrxclone = Arc::new(Mutex::new(rx));
 
     // assigning the future to a variable allows us to basically make a function
     //TODO: Refactor this whole thing
+    // TODO: Handle when we get none, because the unfortunate reality here is that if species stream dies we will not know, care, or do anything because we are not handling when it stops returning values
     let speciesstream = async {
-        info!("Species stream started!");
+        info!(name: "speciesstream", "Species stream started!");
         // While the stream is still giving us values, wait until we have the next value
         while let Some(item) = stream.next().await {
             // Lock species so it is safe to modify, block until then
             let mut species = species.lock().await;
-            trace!("Species lock obtained");
+            trace!(name: "speciesstream", "Species lock obtained");
+            // #TODO, again see if we can track this lock
             match item {
                 Ok(transformation) => {
                     // If this is the first time we are doing this species will be None
@@ -539,7 +731,9 @@ async fn main() -> Result<()> {
                     // the value of species inbetween is_none and is_some
                     if species.is_none() {
                         warn!(
-                            "Setting initial species to {}, This should only happen once!",
+                            name: "speciesstream",
+                            species=?transformation,
+                            "Setting initial species to {:#?}, This should only happen once!",
                             &transformation
                         );
                         *species = Some(transformation);
@@ -551,7 +745,7 @@ async fn main() -> Result<()> {
                           Then we know nothing has changed and we should continue the loop
                         */
                         if species.as_ref().expect("Species has a value") == &transformation {
-                            trace!("Species remained the same.");
+                            trace!(name: "speciesstream", species=?transformation, "Species remained the same.");
                             continue;
                         } else {
                             // However, if it is different, then update current species
@@ -561,51 +755,35 @@ async fn main() -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    error!("Could not set species");
-                    error!("Species loop failure: {}", &e);
+                    error!(name: "speciesstream", "Could not set species");
+                    error!(name: "speciesstream", error_text=?e, "Species loop failure: {:#?}", &e);
                     return Err(anyhow!(e));
                 }
             };
         }
         Ok(())
     };
-    info!("Speciesstream created!");
-
-    // let pronouns_stream =
-    // async {
-    //     match rx.recv() {
-    //         Ok(r) => {
-
-    //         },
-
-    //         Err(e) => {
-    //             println!("Could not set pronouns");
-    //             return Err(anyhow!(e));
-    //         }
-    //     }
-
-    // };
+    info!(name: "speciesstream", "Speciesstream created!");
 
     // Clone an Arc pointer to species and increase our strong reference counts!
     let speciesclone = species.clone();
-    info!("Prepped species for transfer");
+    info!(name: "speciesstream", "Prepped species for transfer");
 
-    info!("Building bot!");
+    info!(name: "main", "Building bot!");
     // Pass the cloned pointers to Discord
     // If either method fails, fail the other and continue
-    let bot = discord(speciesclone, messagesmapclone);
-    info!("Bot built!");
-    info!("Starting main loop!");
-    print!("I am here");
+    let bot = discord(speciesclone, messagesmapclone, pronounsrxclone);
+    info!(name: "main", "Bot built!");
+    info!(name: "main", "Starting main loop!");
     tokio::select! {
         e = bot => {
             match e {
                 Ok(_) => {
                 }
                 Err(e) => {
-                    error!("Discord Bot Failure: {}", e);
-                    error!("An error occured while running Discord {:?}", e);
-                    warn!("Program will now exit!")
+                    error!(name: "main", error_text=?e, "Discord Bot Failure: {:#?}", e);
+                    error!(name: "main", error_text=?e, "An error occured while running Discord {:?}", e);
+                    warn!(name: "main", "Program will now exit!")
                 }
             }
         }
@@ -614,22 +792,21 @@ async fn main() -> Result<()> {
                 Ok(_) => {
                 }
                 Err(e) => {
-                    error!("Notion Failure: {}", e);
-                    error!("An error occured while running Notion {:?}", e);
-                    warn!("Program will now exit!")
+                    error!(name: "main", error_text=?e, "Notion Failure: {:#?}", e);
+                    error!(name: "main", error_text=?e, "An error occured while running Notion {:?}", e);
+                    warn!(name: "main", "Program will now exit!")
                 }
             }
         }
         else => {
             // Yay! Another sucessfull run, let us count our references
-            debug!("Loop successful!");
-            debug!("Messagesmap Refs: {}, Species Refs {}", Arc::strong_count(&messagesmap), Arc::strong_count(&species));
+            debug!(name: "main", "Loop successful!");
+            debug!(name: "main",  arc_count=?Arc::strong_count(&species), "Messagesmap Refs: {:#?}, Species Refs {:#?}", Arc::strong_count(&messagesmap), Arc::strong_count(&species));
         }
     };
 
     // Because there are no more threads at this point besides ours, it is safe to use std::process:exit(1)
-    warn!("Exiting!!!");
-    shutdown_logger_provider();
+    warn!(name: "main", "Exiting!!!");
     std::process::exit(1);
     Ok(())
 }
@@ -637,21 +814,22 @@ async fn main() -> Result<()> {
 async fn discord(
     species: Arc<Mutex<Option<String>>>,
     messages: Arc<Mutex<Option<HashMap<String, String>>>>,
+    rx: Arc<Mutex<Receiver<String>>>
 ) -> Result<()> {
-    dotenv::dotenv().expect("Doctor, where did you put the .env file?");
-    // how do we error on this and log?
+    let config_path = "/etc/serina/.env";
+    dotenv::from_path(config_path).expect("Doctor, where did you put the .env file?");
 
     if cfg!(feature = "dev") {
-        warn!("Dev mode activated!");
+        warn!(name: "discord", "Dev mode activated!");
     }
 
     let botuserid = env::var("BOT_USER_ID").expect("An existing User ID");
     // how do we error on this and log?
-    debug!("{:?}", botuserid);
+    debug!(name: "discord", botuserid=?botuserid, "{:#?}", botuserid);
 
     let buid = botuserid.parse::<u64>();
     let buid = buid.unwrap();
-    info!("BUID Parsed!");
+    info!(name: "discord", "BUID Parsed!");
     let framework = if cfg!(feature = "dev") {
         let framework = StandardFramework::new()
             .configure(|c| {
@@ -675,11 +853,11 @@ async fn discord(
             .group(&COMMANDS_GROUP);
         framework
     };
-    trace!("Framework constructed!");
+    trace!(name: "discord", "Framework constructed!");
     // TODO: Implement custom debug method with newtype in order to print configuration
     // Get the token
     let token = env::var("DISCORD_TOKEN").expect("A valid token");
-    trace!("Token obtained!");
+    trace!(name: "discord", "Token obtained!");
     // Declare intents (these determine what events the bot will receive )
     let intents =
         GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT | GatewayIntents::GUILDS;
@@ -690,7 +868,7 @@ async fn discord(
         .framework(framework)
         .await
         .expect("To have sucessfully built the client.");
-    info!("Discord client successfully built!");
+    info!(name: "discord", "Discord client successfully built!");
 
     // Get a RW lock for a short period of time so that we can shove the arc pointers into their proper containers
 
@@ -700,10 +878,12 @@ async fn discord(
         data.insert::<SnepContainer>(species);
         data.insert::<ResponseMessageContainer>(messages);
         data.insert::<ShardManagerContainer>(client.shard_manager.clone());
-        info!("Arc pointers transferred!")
+        data.insert::<ChannelManagerContainer>(rx.clone());
+        info!(name: "discord", "Arc pointers transferred!")
+        
     }
 
-    info!("Starting Discord client");
+    info!(name: "discord", "Starting Discord client");
     client.start().await?;
     Ok(())
 }
@@ -714,13 +894,13 @@ async fn discord(
 
 #[command]
 async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
-    info!("Fetching Ellen species from Notion on request!");
+    info!(name: "ellenspecies", "Fetching Ellen species from Notion on request!");
     let species = get_ellen_species(Source::Notion).await;
-    info!("Ellen Species fetched from Notion on request!");
+    info!(name: "ellenspecies", "Ellen Species fetched from Notion on request!");
     let species = match species {
         Ok(spcs) => spcs,
         Err(e) => {
-            error!("We encountered an error while fetching from Notion: {}", e);
+            error!(name: "ellenspecies", error_text=?e, "We encountered an error while fetching from Notion: {:#?}", e);
             "Kitsune".to_string()
         }
     };
@@ -743,14 +923,14 @@ async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
     //     }
     //     Err(e) => return Err(e.into()),
     // };
-    info!("species {}", species);
+    info!(name: "ellenspecies", species=%species, "species {}", species);
     let content = format!("Ellen is a {}", species);
     // let content = content.as_str();
     let response = MessageBuilder::new().push(&content).build();
     // let response = response.as_str();
     msg.reply(ctx, &response).await?;
-    debug!("content: {}, response: {}", &content, response);
-    info!("Ellen species delivered to requestor");
+    debug!(name: "ellenspecies", content=?content, response=?response, "content: {:#?}, response: {:#?}", &content, response);
+    info!(name: "ellenspecies", "Ellen species delivered to requestor");
     // ev.send(&mut honeycomb_client);
     // match ev.send(&mut honeycomb_client) {
     //     Ok(()) => {
@@ -771,27 +951,28 @@ async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
 
 #[command]
 async fn ellenpronouns(ctx: &Context, msg: &Message) -> CommandResult {
-    info!("Fetching pronouns from Notion on request!");
+    info!(name: "ellenpronouns", "Fetching pronouns from Notion on request!");
     let pronouns = get_ellen_pronouns(Source::Notion).await;
-    info!("Pronouns fetched from Notion on request!");
+    info!(name: "ellenpronouns", "Pronouns fetched from Notion on request!");
     let pnoun = match pronouns {
         Ok(pnoun) => pnoun,
         Err(e) => {
-            error!("We encountered an error while fetching from Notion: {}", e);
+            error!(name: "ellenpronouns", error_text=?e, "We encountered an error while fetching from Notion: {:#?}", e);
             "She/Her".to_string()
         }
     };
 
-    info!("Pronouns {}", &pnoun);
+    info!(name: "ellenpronouns", pronouns=%pnoun, "Pronouns {}", &pnoun);
     let content = format!("Ellen pronouns are {}", &pnoun);
     let response = MessageBuilder::new().push(&content).build();
     msg.reply(ctx, &response).await?;
 
     debug!(
+        name: "ellenpronouns",
         "pronoun content: {} pronoun response: {}",
         &content, &response
     );
-    info!("Pronouns delivered to requestor");
+    info!(name: "ellenpronouns", "Pronouns delivered to requestor");
 
     Ok(())
 }
@@ -839,20 +1020,20 @@ async fn watch_westworld(ctx: &Context, fetch_duration: Option<Duration>) {
                 "🎶🎶🎶Snepgirl on a leash, you can feed her treats!🎶🎶🎶",
             ))
             .await;
-            info!("Dev Mode Watching activity set!");
-            debug!("Watch Westworld sleeping for 60 seconds");
+            info!(name: "watch_westworld", "Dev Mode Watching activity set!");
+            debug!(name: "watch_westworld", "Watch Westworld sleeping for 60 seconds");
             tokio::time::sleep(Duration::from_secs(60)).await;
         } else {
             ctx.set_activity(Activity::watching(thing)).await;
-            info!("Watching activity set!");
+            info!(name: "watch_westworld", "Watching activity set!");
         }
         match fetch_duration {
             Some(d) => {
-                debug!("Watch Westworld sleeping for {:#?} seconds", d);
+                debug!(name: "watch_westworld", "Watch Westworld sleeping for {:#?} seconds", d);
                 tokio::time::sleep(Duration::from_secs(d.as_secs())).await;
             }
             None => {
-                debug!("Watch Westworld sleeping for 84600 seconds");
+                debug!(name: "watch_westworld", "Watch Westworld sleeping for 84600 seconds");
                 tokio::time::sleep(Duration::from_secs(86400)).await;
             }
         }
@@ -869,25 +1050,25 @@ async fn get_ellen_species(src: Source) -> Result<String> {
     // TODO: Refactor
     match src {
         Source::Notion => {
-            debug!("Fetching species from Notion");
+            debug!(name: "get_ellen_species", "Fetching species from Notion");
             let api_token = "NotionApiToken";
             let api_token = dotenv::var(api_token).unwrap();
             let notion = NotionApi::new(api_token).expect("We were able to authenticate to Notion");
-            debug!("Authenticated to Notion");
+            debug!(name: "get_ellen_species", "Authenticated to Notion");
             // using blockid instead of page because of change in notion API
             let speciesblockid =
                 <BlockId as std::str::FromStr>::from_str("b9a5a246df244244a5345fb3d8ac36a8")
                     .expect("We got a valid BlockID!");
-            debug!("{:#?}", speciesblockid);
+            debug!(name: "get_ellen_species", speciesblockid = %speciesblockid, "The speciesblockid is {:#?}", speciesblockid);
             let speciesblock = notion
                 .get_block_children(speciesblockid)
                 .await
                 .expect("We were able to get the block children");
-            debug!("Species obtained from Notion");
-            trace!("Block children obtained!");
+            debug!(name: "get_ellen_species", "Species obtained from Notion");
+            trace!(name: "get_ellen_species", "Block children obtained!");
             // 679b29a2-c780-4657-b154-264b0bb04ab4
             let test = speciesblock.results;
-            debug!("Speciesblock {:#?}", test);
+            debug!(name: "get_ellen_species", "Speciesblock {:#?}", test);
             let species = match test[0].clone() {
                 notion::models::Block::Heading1 {
                     common: _,
@@ -898,17 +1079,17 @@ async fn get_ellen_species(src: Source) -> Result<String> {
                 }
 
                 e => {
-                    eprint!("The issue was in detecting a synced block {:?}", e);
+                    error!(name: "get_ellen_species", error_text=?e, "The issue was in detecting a synced block {:?}", e);
                     "Kitsune".to_string()
                 }
             };
-            debug!("Species {}", species);
-            debug!("Species returned");
+            debug!(name: "get_ellen_species", species=?species, "Species {:#?}", species);
+            debug!(name: "get_ellen_species", "Species returned");
             Ok(species)
         }
 
         Source::ApiKitsuneGay => {
-            debug!("Fetching species from ApiKitsuneGay");
+            debug!(name: "get_ellen_species", "Fetching species from ApiKitsuneGay");
             let client = reqwest::Client::new();
             let species = client
                 .get("https://api.kitsune.gay/Species")
@@ -917,9 +1098,9 @@ async fn get_ellen_species(src: Source) -> Result<String> {
                 .await?
                 .text()
                 .await?;
-            debug!("Fetched species from ApiKitsuneGay");
-            info!("I have identified the {}", species);
-            debug!("Species returned");
+            debug!(name: "get_ellen_species", "Fetched species from ApiKitsuneGay");
+            info!(name: "get_ellen_species", species=%species, "I have identified the {}", species);
+            debug!(name: "get_ellen_species", "Species returned");
             Ok(species)
         }
     }
@@ -928,25 +1109,25 @@ async fn get_ellen_species(src: Source) -> Result<String> {
 async fn get_ellen_pronouns(src: Source) -> Result<String> {
     match src {
         Source::Notion => {
-            debug!("Fetching Pronouns from Notion");
+            debug!(name: "get_ellen_pronouns", "Fetching Pronouns from Notion");
             let api_token = "NotionApiToken";
             let api_token = dotenv::var(api_token).unwrap();
             let notion = NotionApi::new(api_token).expect("We were able to authenticate to Notion");
-            debug!("Authenticated to Notion");
+            debug!(name: "get_ellen_pronouns", "Authenticated to Notion");
             // using blockid instead of page because of change in notion API
             let pronounsblockid =
                 <BlockId as std::str::FromStr>::from_str("6354ad3719274823aa473537a2f61219")
                     .expect("We got a valid BlockID!");
-            debug!("{:#?}", pronounsblockid);
+            debug!(name: "get_ellen_pronouns", pronouns_block_id=?pronounsblockid, "{:#?}", pronounsblockid);
             let pronounsblock = notion
                 .get_block_children(pronounsblockid)
                 .await
                 .expect("We were able to get the block children");
             // 679b29a2-c780-4657-b154-264b0bb04ab4
-            debug!("Pronouns obtained from Notion");
-            trace!("Block children obtained!");
+            debug!(name: "get_ellen_pronouns", "Pronouns obtained from Notion");
+            trace!(name: "get_ellen_pronouns", "Block children obtained!");
             let test = pronounsblock.results;
-            debug!("Pronounsblock {:#?}", test);
+            debug!(name: "get_ellen_pronouns", "Pronounsblock {:#?}", test);
             let pronouns = match test[0].clone() {
                 notion::models::Block::Heading1 {
                     common: _,
@@ -957,12 +1138,13 @@ async fn get_ellen_pronouns(src: Source) -> Result<String> {
                 }
 
                 e => {
-                    eprint!("The issue was in detecting a synced block {:?}", e);
+                    error!(name: "get_ellen_pronouns", error_text=?e, "The issue was in detecting a synced block {:?}", e);
                     "She/Her".to_string()
                 }
             };
-            debug!("Pronouns {}", pronouns);
-            debug!("Pronouns returned");
+            debug!(name: "get_ellen_pronouns", pronouns=?pronouns, "Pronouns {:#?}", pronouns);
+            // change to % in order to get non string version
+            debug!(name: "get_ellen_pronouns", "Pronouns returned");
             Ok(pronouns)
         }
 
@@ -976,7 +1158,7 @@ async fn get_ellen_pronouns(src: Source) -> Result<String> {
             //     .text()
             //     .await?;
             // println!("I have identified the {}", species);
-            error!("ApiKitsuneGay was used as a source for pronouns! This function is not yet implemented!");
+            error!(name: "get_ellen_pronouns", "ApiKitsuneGay was used as a source for pronouns! This function is not yet implemented!");
             let pronouns = "She/Her".to_string();
             return Ok(pronouns);
         }
@@ -990,32 +1172,32 @@ fn poll_notion(tx: Sender<String>) -> impl Stream<Item = Result<String>> {
     let sleep_time = Duration::from_secs(30);
     try_stream! {
         loop {
-            info!("Polling notion");
+            info!(name: "poll_notion", "Polling notion");
             // The ? hands the error off to the caller
             let species = get_ellen_species(Source::Notion).await?;
-            info!("Species obtained from notion!");
+            info!(name: "poll_notion", species=%species, "Species obtained from notion!");
             let pronouns = get_ellen_pronouns(Source::Notion).await?;
-            info!("Pronouns obtained from notion!");
+            info!(name: "poll_notion", pronouns=%pronouns, "Pronouns obtained from notion!");
             //TODO: check for valid species
             if !species.is_empty() {
-                info!("Handed off species to stream!");
+                info!(name: "poll_notion", "Handed off species to stream!");
                 yield species;
             }
-            info!("Sending pronouns to channel!");
+            info!(name: "poll_notion", "Sending pronouns to channel!");
             tx.send(pronouns)?;
-            info!("Pronouns sent to channel!");
-            debug!("Sleeping for 30 seconds");
+            info!(name: "poll_notion", "Pronouns sent to channel!");
+            debug!(name: "poll_notion", "Sleeping for 30 seconds");
             tokio::time::sleep(sleep_time).await;
         }
     }
 }
 
 fn get_phrases() -> Result<HashMap<std::string::String, std::string::String>> {
-    info!("Reading lines in");
-    if let Ok(phrases) = read_lines("./phrases.txt") {
-        info!("Read lines in!");
+    info!(name: "get_phrases", "Reading lines in");
+    if let Ok(phrases) = read_lines("/etc/serina/phrases.txt") {
+        info!(name: "get_phrases", "Read lines in!");
         let phrases: Vec<String> = phrases.filter_map(|f| f.ok()).collect();
-        debug!("phrases {:?}", phrases);
+        debug!(name: "get_phrases", phrases=?phrases, "phrases {:#?}", phrases);
         // this consumes the iterator, as rust-by-example notes
         // although this should also be obvious imo
         // also welcome back to Rust, where you are forced to handle your errors
@@ -1023,7 +1205,7 @@ fn get_phrases() -> Result<HashMap<std::string::String, std::string::String>> {
 
         // If there are any messages, create a hash map from them
         if phrases.len() != 0 {
-            info!("Parsing phrases");
+            info!(name: "get_phrases", "Parsing phrases");
             //The messages file must contain a single column with alternate entries in the following format, the first entry must be an animal sound,
             // IE:
             // Mow
@@ -1034,22 +1216,22 @@ fn get_phrases() -> Result<HashMap<std::string::String, std::string::String>> {
                 // Although we will have to skip ahead if i is an odd number
                 // And manually handle the break at the end
                 if i % 2 == 0 {
-                    messagesmap.insert(m.clone(), phrases[i + 1].clone());
+                    messagesmap.insert(m.clone().to_lowercase(), phrases[i + 1].clone());
                 } else if i == phrases.len() {
                     break;
                 } else {
                     continue;
                 }
             }
-            info!("Phrases succesfully parsed");
-            trace!("messagesmap: {:?}", messagesmap);
+            info!(name: "get_phrases", "Phrases succesfully parsed");
+            trace!(name: "messagesmap", messagemap=?messagesmap, "messagesmap: {:#?}", messagesmap);
             return Ok(messagesmap);
         } else {
-            error!("Phrases could not be parsed!");
+            error!(name: "get_phrases", "Phrases could not be parsed!");
             return Err(anyhow!("Error extracting phrases!"));
         }
     } else {
-        error!("Error reading from file!");
+        error!(name: "get_phrases", "Error reading from file!");
         return Err(anyhow!("Error reading from file!"));
     }
 }
@@ -1090,7 +1272,7 @@ fn watch_a_thing(schedule: Schedule) -> String {
     }
     let now: DateTime<Local> = chrono::offset::Local::now();
     let dayoftheweek = now.date_naive().weekday();
-    debug!("Day of week: {}", dayoftheweek);
+    debug!(name: "watch_a_thing", day=%dayoftheweek, "Day of week: {}", dayoftheweek);
 
     let show = match schedule {
         Schedule::TV {
@@ -1115,7 +1297,7 @@ fn watch_a_thing(schedule: Schedule) -> String {
                 5 => Friday,
                 _ => StringDefault,
             };
-            debug!("Today's show is {}", show);
+            debug!(name: "watch_a_thing", show=?show, "Today's show is {:#?}", show);
             show
         }
         Schedule::Nothing { Message } => Message,
@@ -1123,7 +1305,7 @@ fn watch_a_thing(schedule: Schedule) -> String {
     show
 }
 
-fn init_logs() -> Result<opentelemetry_sdk::logs::Logger, LogError> {
+fn init_logs() -> Result<sdklogs::LoggerProvider, opentelemetry::logs::LogError> {
     // Get the endpoint, can swap this out as needed!
     let endpoint =
         dotenv::var(ENDPOINT).expect("OTEL_EXPORTER_OTLP_ENDPOINT dotenv variable exists");
@@ -1141,23 +1323,24 @@ fn init_logs() -> Result<opentelemetry_sdk::logs::Logger, LogError> {
         })
         .collect();
 
-    let service_name = "dolores";
+    
     opentelemetry_otlp::new_pipeline()
         .logging()
-        .with_log_config(
-            Config::default().with_resource(Resource::new(vec![KeyValue::new(
-                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                service_name,
-            )])),
-        )
+        .with_log_config(Config::default().with_resource(Resource::new(vec![KeyValue::new(
+            opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+            "dolores",
+        )])),
+    )
         .with_exporter(
             opentelemetry_otlp::new_exporter()
                 .http()
                 .with_endpoint(endpoint)
                 .with_headers(headers),
         )
-        .install_batch(other_runtime::Tokio)
+        .install_batch(runtime::Tokio)
 }
+
+
 
 #[cfg(test)]
 mod tests {

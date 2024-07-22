@@ -1,5 +1,5 @@
 [package]
-name = "dolores"
+name = "Serina"
 version = "0.1.0"
 edition = "2021"
 # rustc-link-search = ["/usr/bin"]
@@ -10,7 +10,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-serenity = { version = "0.11.7", features = ["utils"] }
+serenity = { version = "0.11.5", features = ["utils"] }
 tokio = { version = "1.20.1", features = [
     "rt",
     "macros",
@@ -19,7 +19,7 @@ tokio = { version = "1.20.1", features = [
 ] }
 dotenv = "0.15.0"
 serde_json = "1.0"
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.12.2", features = ["json"] }
 async-stream = "0.3.3"
 futures-core = "0.3"
 futures-util = "0.3"
@@ -27,15 +27,15 @@ anyhow = "1.0.68"
 notion = "0.5.1"
 chrono = "0.4.24"
 once_cell = "1.18.0"
-opentelemetry = { version = "0.21.0", features = ["logs"] }
-opentelemetry-otlp = { version = "*", features = [
+opentelemetry = { version = "0.23.0", features = ["logs"] }
+opentelemetry-otlp = { version = "0.16.0", features = [
     "logs",
     "http-proto",
     "reqwest-client",
 ] }
-opentelemetry_sdk = { version = "*", features = ["logs", "rt-tokio"] }
+opentelemetry_sdk = { version = "0.23.0", features = ["logs", "rt-tokio"] }
 opentelemetry-semantic-conventions = { version = "*" }
-tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing = { version = "0.1", features = ["std"] }
 tracing-core = "0.1.31"
 tracing-subscriber = { version = "0.3.0", default-features = false, features = [
     "registry",
@@ -43,7 +43,11 @@ tracing-subscriber = { version = "0.3.0", default-features = false, features = [
     "env-filter",
     "fmt",
 ] }
-opentelemetry-appender-tracing = { version = "*" }
+opentelemetry-appender-tracing = { version = "0.4.0", default-features = false }
+serde = "1.0.193"
+uncased = "0.9.10"
+rand = "0.8.5"
+
 [features]
 default = []
 dev = []
