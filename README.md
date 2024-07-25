@@ -34,6 +34,9 @@ Then, fill out the `.env` file with the following entries:
 * `BOT_USER_ID`
 * `DISCORD_TOKEN`
 * `NotionApiToken`
+With logging turned on, the following additional entries are required:
+* `OTEL_EXPORTER_OTLP_ENDPOINT`
+* `OTEL_SERVICE_NAME`
 
 Next, run the following command from the root of the folder:
 `cp phrases.txt /etc/serina/`
