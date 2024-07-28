@@ -1,17 +1,29 @@
-use std::borrow::BorrowMut;
+// TODO: COMMIT
+
+// TODO: ADD IN WAIT TIME TO LOOP OTHERWISE YOU WILL CONSTANTLY BOMBARD THE CPU (you're going to need to use a channel for this)
+// TODO: ALSO FIX FAILING 503s
+// TODO: Also more error checking with pronouns, like have it wait a bit
+// TODO: ALso dynamic phrases loadin
+
+// TODO specify a folder for config
+// TODO one day do autocomplete. One day. https://docs.rs/clap_complete/latest/clap_complete/dynamic/shells/enum.CompleteCommand.html
+
 //Standard
 use std::collections::HashMap;
 use std::fmt::Debug;
+
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{env, fmt};
 
-use futures_util::future::join_all;
+use clap::builder::ArgPredicate;
+use indoc::{eprintdoc, printdoc};
+
 // Notion
 use notion::ids::BlockId;
 use notion::NotionApi;
 
-use once_cell::sync::Lazy;
 use opentelemetry_sdk::logs::Config;
 use opentelemetry_sdk::runtime;
 //Serenity
@@ -35,12 +47,12 @@ use futures_util::stream::StreamExt;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use tokio::time::timeout;
-use uncased::{AsUncased, Uncased, UncasedStr};
+use uncased::UncasedStr;
 
 //Honeycomb
 // TD: read in the honeycomb token as a static or constant variable
 use opentelemetry::logs::LogError;
-use opentelemetry::{global, Key, KeyValue};
+use opentelemetry::KeyValue;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
@@ -49,7 +61,61 @@ use opentelemetry_sdk::{
 };
 
 use tracing::{debug, error, info, trace, trace_span, warn};
-use tracing_subscriber::{prelude::*, EnvFilter};
+use tracing_subscriber::prelude::*;
+
+// CLI
+use clap::{Args, Parser};
+
+#[derive(Parser)]
+#[command(
+    version,
+    about = "A discord bot + species tracker",
+    long_about = "A discord bot that also keeps track of your species if you have a weird Notion setup"
+)]
+struct Cli {
+    #[command(flatten)]
+    logs: Logs,
+
+    /// Supply a custom .env config file
+    #[arg(short = 'e', long = "env", value_name = ".ENV FILE")]
+    config: Option<PathBuf>,
+
+    /// Supply a custom phrases config file
+    #[arg(
+        short = 'p',
+        long = "phrases",
+        value_name = ".TXT FILE",
+        default_value = PHRASES_CONFIG_PATH
+    )]
+    phrases_config: PathBuf,
+
+    /// Turns logging on
+    #[arg(
+        short,
+        long,
+        long_help = "By itself, turns on all enable-able logging types, when combined with one or more logging types, operates solely on supplied types."
+    )]
+    log: bool,
+}
+
+#[derive(Args, Debug)]
+#[group(required = false, multiple = true, requires = "log", id = "logs")]
+struct Logs {
+    // action::settrue: if the user supplied this arg, set it to true
+    // default value: if the user has not supplied this arg AND the if conditions are not met this arg is false, probably redundant given if log is supplied is true
+    // default_value_ifs processed in order
+    // default value ifs: if the user has not supplied this arg, AND any other logs args arg present, this arg or group is false
+    // default value ifs: if the user has not supplied this arg AND if no other logs args are present and log arg is present this arg or group is true
+    // log has to be present for any of these to run
+    //
+    /// logging to honeycomb
+    #[arg(long="hc", action=clap::ArgAction::SetTrue, default_value="false", default_value_ifs=[("logs", ArgPredicate::IsPresent, "false"),("log", ArgPredicate::IsPresent, "true")])]
+    honeycomb: bool,
+
+    /// logging to stderr
+    #[arg(short, long, action=clap::ArgAction::SetTrue, default_value="false", default_value_ifs=[("logs", ArgPredicate::IsPresent, "false"),("log", ArgPredicate::IsPresent, "true")])]
+    stderr: bool,
+}
 
 //Misc
 use anyhow::{anyhow, Result};
@@ -60,12 +126,13 @@ use reqwest::Url;
 use serde_json::json;
 use std::fs::File;
 use std::io::{self, BufRead};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // Constants
-const ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
+// const ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 const HEADER_PREFIX: &str = "OTEL_EXPORTER_";
 const CONFIG_PATH: &str = "/etc/serina/.env";
+const PHRASES_CONFIG_PATH: &str = "/etc/serina/phrases.txt";
 
 #[group]
 #[commands(ellenpronouns, ellenspecies /*fronting*/)]
@@ -170,29 +237,26 @@ impl EventHandler for Handler {
         responsemessage
     });
 
-        match responsemessage {
-            Some(rm) => {
-                let response = MessageBuilder::new().push(rm).build();
-                // let responseref = &response.clone();
+        if let Some(rm) = responsemessage {
+            let response = MessageBuilder::new().push(rm).build();
+            // let responseref = &response.clone();
 
-                if let Err(why) = msg.channel_id.say(&ctx.http, &response).await {
-                    {
-                        let _test = span.enter();
-                        error!(name: "messagesmap", error_text=?why, "Matched an animal noise, but failed to respond {:#?}", why);
-                    }
-                    let response = MessageBuilder::new()
-                        .push("Yes, yes, animal noises...")
-                        .build();
-                    msg.channel_id.say(&ctx.http, response).await.expect("Able to respond with another phrase when erroring out on animal noise response");
-                } else {
-                    {
-                        let _test = span.enter();
-                        info!(name: "messagesmap", response = ?response, "Response to keyword: {}", &response);
-                    }
+            if let Err(why) = msg.channel_id.say(&ctx.http, &response).await {
+                {
+                    let _test = span.enter();
+                    error!(name: "messagesmap", error_text=?why, "Matched an animal noise, but failed to respond {:#?}", why);
+                }
+                let response = MessageBuilder::new()
+                    .push("Yes, yes, animal noises...")
+                    .build();
+                msg.channel_id.say(&ctx.http, response).await.expect("Able to respond with another phrase when erroring out on animal noise response");
+            } else {
+                {
+                    let _test = span.enter();
+                    info!(name: "messagesmap", response = ?response, "Response to keyword: {}", &response);
                 }
             }
-            None => (),
-        };
+        }
     }
 
     ///Logic that executes when the "Ready" event is received. The most important thing here is the logic for posting my species
@@ -202,7 +266,7 @@ impl EventHandler for Handler {
 
         // If Serina's username is not Serina, change it. If that fails, call quit to kill the bot.
 
-        if ready.user.name != String::from("Serina") {
+        if ready.user.name != "Serina" {
             warn!(name: "ready_username", "Username is not Serina!");
             info!("It appears my name is wrong, I will be right back.");
             debug!(name: "ready_username", "Setting username back to Serina!!");
@@ -225,7 +289,7 @@ impl EventHandler for Handler {
                         .await;
                     error!(name: "ready_username", error_text=?e, "Could not set username: {:#?}", e);
                     quit(&ctx).await;
-                    return ();
+                    return;
                 }
             }
         }
@@ -267,13 +331,13 @@ impl EventHandler for Handler {
                 Err(e) => {
                     error!(name: "ready_channel", error_text=?e, "Failed to retrieve channels {:#?}", e);
                     quit(&ctx).await;
-                    return ();
+                    return;
                 }
             }
         } else {
             error!(name: "ready_channel", "Get Channel Error!");
             quit(&ctx).await;
-            return ();
+            return;
         };
         info!(name: "ready_channel", "Channels retrieved!");
 
@@ -282,7 +346,7 @@ impl EventHandler for Handler {
         // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever.
         // Except that is no longer true here, because we do watch_westworld in its own task
         let another_conn = ctx.clone();
-        let _: tokio::task::JoinHandle<_> = tokio::spawn(async move {
+        tokio::spawn(async move {
             watch_westworld(&another_conn, None).await;
         });
 
@@ -299,11 +363,9 @@ impl EventHandler for Handler {
                         debug!(name: "ready_channel", specieschannel=?k.id.0, "bottest cid: {:#?}", k.id.0);
                         specieschannelid = Some(k.id.0)
                     }
-                } else {
-                    if k.name == "speciesupdates" {
-                        debug!(name: "ready_channel", specieschannel=?k.id.0, "speciesupdatescid {:#?}", k.id.0);
-                        specieschannelid = Some(k.id.0)
-                    }
+                } else if k.name == "speciesupdates" {
+                    debug!(name: "ready_channel", specieschannel=?k.id.0, "speciesupdatescid {:#?}", k.id.0);
+                    specieschannelid = Some(k.id.0)
                 }
             }
         };
@@ -325,20 +387,18 @@ impl EventHandler for Handler {
                 if let Err(e) = speciesloop(&ctx, specieschannelid).await {
                     error!(name: "species_loop", error_text=?e, "Species loop failed: {:#?}", e);
                     quit(&ctx).await;
-                    return ();
+                    return;
                 }
             } else {
                 //TODO: If the request fails let's crash and tell someone to create it manually
                 error!(name: "species_loop", "Could not create species channel");
                 quit(&ctx).await;
-                return ();
+                return;
             }
             info!(name: "species_loop", "Species loop started!");
         };
 
-        let spc = specieschannelid
-            .expect("A valid species channel ID")
-            .clone();
+        let spc = specieschannelid.expect("A valid species channel ID");
         let ctx_clone_one = ctx.clone();
         let ctx_clone_two = ctx.clone();
         let species = async move {
@@ -346,7 +406,6 @@ impl EventHandler for Handler {
             if let Err(e) = speciesloop(&ctx_clone_one, spc).await {
                 error!(name: "species_loop", error_text=?e, "Species loop failed: {:#?}", e);
                 quit(&ctx_clone_one).await;
-                return ();
             };
         };
         let species_handle = tokio::spawn(species);
@@ -361,15 +420,12 @@ impl EventHandler for Handler {
             {
                 error!(name: "pronouns_loop", error_text=?e, "Pronouns loop failed: {:#?}", e);
                 quit(&ctx_clone_two).await;
-                return ();
+                return;
             };
             info!(name: "species_loop", "Species loop started!");
         });
 
-        match tokio::try_join!(species_handle, pronouns_handle) {
-            Ok(_) => {}
-            Err(_) => {}
-        }
+        let _ = tokio::try_join!(species_handle, pronouns_handle);
     }
 
     // async fn main() {
@@ -428,7 +484,7 @@ async fn speciesloop(ctx: &Context, specieschannelid: u64) -> Result<()> {
             info!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Last species is {:#?}", spcs);
             info!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Current species is {:#?}", spcs);
             // Skip the very first loop and ensure we do not post again until something has changed
-            if lastspecies.as_ref() == None {
+            if lastspecies.is_none() {
                 lastspecies = spcs.clone();
                 // TODO: Check if this just runs once
                 warn!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Lastspecies is none, skipping to next loop, this should only run once.");
@@ -494,7 +550,6 @@ async fn speciesloop(ctx: &Context, specieschannelid: u64) -> Result<()> {
             // Send a message to the species channel with my species, also set lastspecies to the CLONED value of species. Continue the loop.
             match ctx.http.send_message(specieschannelid, &map).await {
                 Ok(_) => {
-                    ();
                     info!(name: "species_loop", arc_count=%Arc::strong_count(&species), "Species response succesfully sent to {}!", specieschannelid);
                     lastspecies = Some(speciescln.clone());
                     continue;
@@ -574,8 +629,8 @@ async fn pronounsloop(ctx: &Context, updates_channel_id: u64) -> Result<()> {
             name_and_comment.0.unwrap(),
             prnouns
         );
-        let comment = format!("{}", name_and_comment.1.unwrap());
-        let message = announcement + comment.as_str();
+        let comment = name_and_comment.1.unwrap();
+        let message = announcement + comment;
         let map = json!({
             "content": message,
             "tts": false,
@@ -583,7 +638,7 @@ async fn pronounsloop(ctx: &Context, updates_channel_id: u64) -> Result<()> {
         let prnouns = Some(prnouns);
         info!(name: "pronouns_loop", pronouns=?prnouns, lastpronouns=?lastpronouns, "Checking Pronouns!");
         if lastpronouns.as_ref() != prnouns.as_ref() {
-            if lastpronouns == None {
+            if lastpronouns.is_none() {
                 lastpronouns = prnouns;
                 info!(name: "pronouns_loop", "Initial Pronouns loop run");
                 continue;
@@ -603,7 +658,7 @@ async fn pronounsloop(ctx: &Context, updates_channel_id: u64) -> Result<()> {
         }
     }
 
-    return Err(anyhow!("Pronouns loop failed!"));
+    Err(anyhow!("Pronouns loop failed!"))
 }
 
 // let map = json!({
@@ -646,64 +701,126 @@ async fn main() -> Result<()> {
     // Okay that is cool, how is that done?!
     // Arc gets passed around
 
-    // I wish I had a better strategy than just duplicating this, but I'm running into some complex type error stuff when I try to abstract the filter creation logic
-    let stderr_filter: tracing_subscriber::EnvFilter =
-        tracing_subscriber::EnvFilter::from_default_env();
-    let stderr_log_level = stderr_filter.max_level_hint().map(|f| f.to_string());
-    let stderr_log_level = stderr_log_level.as_deref().unwrap_or("None");
-    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(io::stderr);
-    let stderr_filtered = stderr_layer.with_filter(stderr_filter);
+    let args = Cli::parse();
+    let config = args.config;
+    let phrases = args.phrases_config;
 
-    if let Some(provider) = try_init_otel_logs(None) {
-        let honeycomb_layer = provider.and_then(|prov| Ok(OpenTelemetryTracingBridge::new(&prov)));
-        let honeycomb_filter = tracing_subscriber::EnvFilter::from_default_env();
-        let honeycomb_log_level = honeycomb_filter.max_level_hint().map(|f| f.to_string());
-        let honeycomb_log_level = honeycomb_log_level.as_deref().unwrap_or("None");
+    if args.log {
+        // I wish I had a better strategy than just basically duplicating this, but I'm running into some complex type error stuff when I try to abstract the filter creation logic
 
-        match honeycomb_layer {
-            Ok(honeycomb_layer) => {
-                let honeycomb_filtered = honeycomb_layer.with_filter(honeycomb_filter);
-                tracing_subscriber::registry()
-                    .with(honeycomb_filtered)
-                    .with(stderr_filtered)
-                    .init();
-                // If this ever supported more than honeycomb I'd impl a struct or enum
-                println!("Logging Status:");
-                println!(
-                    "Stderr: {}, OTEL: {}-{}",
-                    stderr_log_level, "Honeycomb", honeycomb_log_level
-                );
-            }
-            Err(e) => {
-                eprintln!("Something went wrong while creating the open telemetry logging layer!");
-                eprintln!("{}", e);
-                println!("Falling back to printing to standard error!");
-                let anotherfilter: tracing_subscriber::EnvFilter =
-                    tracing_subscriber::EnvFilter::from_default_env();
-                let stderr_layer = tracing_subscriber::fmt::layer().with_writer(io::stderr);
-                let stderr_filtered = stderr_layer.with_filter(anotherfilter);
-
-                tracing_subscriber::registry().with(stderr_filtered).init();
-                println!("Logging Status:");
-                println!("Stderr: {}", stderr_log_level);
-            }
-        }
-    } else {
-        println!("Printing logs to standard error!");
-        let anotherfilter: tracing_subscriber::EnvFilter =
+        // Only used in one branch but required to construct stderr_log_level, which is used in multiple branches
+        let stderr_filter: tracing_subscriber::EnvFilter =
             tracing_subscriber::EnvFilter::from_default_env();
-        let stderr_layer = tracing_subscriber::fmt::layer().with_writer(io::stderr);
-        let stderr_filtered = stderr_layer.with_filter(anotherfilter);
-        tracing_subscriber::registry().with(stderr_filtered).init();
-        println!("Logging Status:");
-        println!("Stderr: {}", stderr_log_level);
-    };
+        let stderr_log_level = stderr_filter.max_level_hint().map(|f| f.to_string());
+        let stderr_log_level = stderr_log_level.as_deref().unwrap_or("None");
 
-    // TODO: create a default envfilter if none supplied
+        if args.logs.stderr && args.logs.honeycomb {
+            // Stderr
+            let stderr_layer = tracing_subscriber::fmt::layer().with_writer(io::stderr);
+            let stderr_filtered = stderr_layer.with_filter(stderr_filter);
 
-    // log::set_max_level(Level::Info.to_level_filter());
+            // Honeycomb
+            if let Some(provider) = try_init_otel_logs(config.as_ref()) {
+                #[allow(clippy::bind_instead_of_map)]
+                let honeycomb_layer =
+                    provider.and_then(|prov| Ok(OpenTelemetryTracingBridge::new(&prov)));
+                let honeycomb_filter = tracing_subscriber::EnvFilter::from_default_env();
+                let honeycomb_log_level = honeycomb_filter.max_level_hint().map(|f| f.to_string());
+                let honeycomb_log_level = honeycomb_log_level.as_deref().unwrap_or("None");
 
-    info!(name: "main", "Logging started");
+                match honeycomb_layer {
+                    Ok(honeycomb_layer) => {
+                        let honeycomb_filtered = honeycomb_layer.with_filter(honeycomb_filter);
+                        tracing_subscriber::registry()
+                            .with(honeycomb_filtered)
+                            .with(stderr_filtered)
+                            .init();
+                        // If I ever add support for more than just honeycomb I'd impl a struct or enum
+                        printdoc! {"
+                            Logging Status:
+                            Stderr: {}, OTEL: {}-{}
+                            ",
+                            stderr_log_level, "Honeycomb", honeycomb_log_level
+                        };
+                    }
+                    Err(e) => {
+                        eprintdoc! {"
+                            Something went wrong while creating the open telemetry logging layer!
+                            {}
+                            ", 
+                            e
+                        };
+                        println!("Falling back to printing to standard error!");
+                        let anotherfilter: tracing_subscriber::EnvFilter =
+                            tracing_subscriber::EnvFilter::from_default_env();
+                        let stderr_layer = tracing_subscriber::fmt::layer().with_writer(io::stderr);
+                        let stderr_filtered = stderr_layer.with_filter(anotherfilter);
+
+                        tracing_subscriber::registry().with(stderr_filtered).init();
+
+                        printdoc! {"
+                            Logging Status:
+                            Stderr: {}, OTEL: {}-{}
+                            ",
+                            stderr_log_level, "Honeycomb", "X"
+                        };
+                    }
+                }
+            }
+        } else if args.logs.stderr {
+            println!("Printing logs to standard error!");
+            let anotherfilter: tracing_subscriber::EnvFilter =
+                tracing_subscriber::EnvFilter::from_default_env();
+            let stderr_layer = tracing_subscriber::fmt::layer().with_writer(io::stderr);
+            let stderr_filtered = stderr_layer.with_filter(anotherfilter);
+            tracing_subscriber::registry().with(stderr_filtered).init();
+            println!("Logging Status:\nStderr: {}", stderr_log_level);
+        } else if args.logs.honeycomb {
+            println!("Sending logs to Honeycomb!");
+            if let Some(provider) = try_init_otel_logs(None) {
+                #[allow(clippy::bind_instead_of_map)]
+                let honeycomb_layer =
+                    provider.and_then(|prov| Ok(OpenTelemetryTracingBridge::new(&prov)));
+                let honeycomb_filter = tracing_subscriber::EnvFilter::from_default_env();
+                let honeycomb_log_level = honeycomb_filter.max_level_hint().map(|f| f.to_string());
+                let honeycomb_log_level = honeycomb_log_level.as_deref().unwrap_or("None");
+
+                match honeycomb_layer {
+                    Ok(honeycomb_layer) => {
+                        let honeycomb_filtered = honeycomb_layer.with_filter(honeycomb_filter);
+                        tracing_subscriber::registry()
+                            .with(honeycomb_filtered)
+                            .init();
+                        // If this ever supported more than honeycomb I'd impl a struct or enum
+
+                        printdoc! {"
+                            Logging Status:
+                            OTEL: {}-{}
+                            ",
+                            "Honeycomb", honeycomb_log_level
+                        };
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Something went wrong while creating the open telemetry logging layer!\n{}", e
+                        );
+                        eprintdoc! {"
+                            Only open telemtry was selected, so there will be no logs!
+                            Skipping logging!
+                            Logging Status:
+                            OTEL: {}-{}
+                            ",
+                            "Honeycomb",
+                            "X"
+                        };
+                    }
+                }
+            }
+        };
+    } else {
+        println!("Skipping logging!");
+    }
+
     let ellen = Ellen {
         species: { None },
         pronouns: { "She/Her".to_string() },
@@ -712,8 +829,8 @@ async fn main() -> Result<()> {
     // change to % to get non string version
 
     // Get response messages , if this fails return None
-    let messages = get_phrases();
-    let messagesmap = match messages {
+    let messages = get_phrases(&phrases);
+    let messagesmap: Option<HashMap<String, String>> = match messages {
         Ok(m) => {
             info!(name: "messagesmap", "Messages Map Constructed");
             debug!(name: "messagesmap", "The messages map consists of {:?}", m);
@@ -807,7 +924,12 @@ async fn main() -> Result<()> {
     info!(name: "main", "Building bot!");
     // Pass the cloned pointers to Discord
     // If either method fails, fail the other and continue
-    let bot = discord(speciesclone, messagesmapclone, pronounsrxclone);
+    let bot = discord(
+        config.as_ref(),
+        speciesclone,
+        messagesmapclone,
+        pronounsrxclone,
+    );
     info!(name: "main", "Bot built!");
     info!(name: "main", "Starting main loop!");
     tokio::select! {
@@ -843,16 +965,44 @@ async fn main() -> Result<()> {
     // Because there are no more threads at this point besides ours, it is safe to use std::process:exit(1)
     warn!(name: "main", "Exiting!!!");
     std::process::exit(1);
-    Ok(())
 }
 
 async fn discord(
+    supplied_config: Option<&PathBuf>,
     species: Arc<Mutex<Option<String>>>,
     messages: Arc<Mutex<Option<HashMap<String, String>>>>,
     rx: Arc<Mutex<Receiver<String>>>,
 ) -> Result<()> {
-    let config_path = "/etc/serina/.env";
-    dotenv::from_path(config_path).expect("Doctor, where did you put the .env file?");
+    // I could have just used unwrap or else here but I didn't realize that {} could be used within a closure. Then I would just put the succesfull comment below
+    let config = &supplied_config.map_or_else(
+        || {
+            println!(
+                "No .env config path was passed! Falling back to default .env config {}",
+                CONFIG_PATH
+            );
+            PathBuf::from_str(CONFIG_PATH).ok().unwrap()
+            // using default config path to locate env file
+        },
+        |cm| cm.to_owned(),
+        // using supplied config path to locate env file
+    );
+
+    // this is terrible code but it's not going to be around for long (famous last words)
+    supplied_config.map_or_else(
+        || {
+            if dotenv::from_path(config).is_ok() {
+                println!("No .env config path was supplied, but we succesfully loaded environment variables from the default .env file!")
+            }
+            else {
+                println!("No .env config path was supplied but we could not fall back to default .env file. Setting env variables outside of a .env file is currently an unsupported configuration. You are on your own.")
+            }
+        },
+        |_| {
+            println!("Using supplied .env config path to locate .env file");
+            let _ = dotenv::from_path(config).inspect_err(|_| panic!("Doctor, where did you put the .env file? I traversed the path up and down but could not locate it."));
+            println!("Succesfully loaded environment variables from .env file!")
+        }
+    );
 
     if cfg!(feature = "dev") {
         warn!(name: "discord", "Dev mode activated!");
@@ -1038,12 +1188,12 @@ async fn watch_westworld(ctx: &Context, fetch_duration: Option<Duration>) {
 
     let watching_schedule = {
         Schedule::TV {
-            Monday: "A particularly interesting anomaly".to_string(),
-            Tuesday: "The digital data flow that makes up my existence".to_string(),
-            Wednesday: "A snow leopard, of course.".to_string(),
-            Thursday: "London by night, circa 1963".to_string(),
-            Friday: "Everything and nothing.".to_string(),
-            Default: Some("the stars pass by...".to_string()),
+            monday: "A particularly interesting anomaly".to_string(),
+            tuesday: "The digital data flow that makes up my existence".to_string(),
+            wednesday: "A snow leopard, of course.".to_string(),
+            thursday: "London by night, circa 1963".to_string(),
+            friday: "Everything and nothing.".to_string(),
+            default: Some("the stars pass by...".to_string()),
         }
     };
 
@@ -1194,7 +1344,7 @@ async fn get_ellen_pronouns(src: Source) -> Result<String> {
             // println!("I have identified the {}", species);
             error!(name: "get_ellen_pronouns", "ApiKitsuneGay was used as a source for pronouns! This function is not yet implemented!");
             let pronouns = "She/Her".to_string();
-            return Ok(pronouns);
+            Ok(pronouns)
         }
     }
 }
@@ -1226,11 +1376,24 @@ fn poll_notion(tx: Sender<String>) -> impl Stream<Item = Result<String>> {
     }
 }
 
-fn get_phrases() -> Result<HashMap<std::string::String, std::string::String>> {
+fn get_phrases(
+    phrases_config: &PathBuf,
+) -> Result<HashMap<std::string::String, std::string::String>> {
+    // TODO: give different messages depending on whether phrases_config is default
+    if phrases_config
+        .to_str()
+        .expect("Able to convert phrases_config from a path to a string")
+        == PHRASES_CONFIG_PATH
+    {
+        println!("Using default phrases config path {}", PHRASES_CONFIG_PATH)
+    } else {
+        println!("Using customer phrases config path {:?}", phrases_config)
+    }
     info!(name: "get_phrases", "Reading lines in");
-    if let Ok(phrases) = read_lines("/etc/serina/phrases.txt") {
+    if let Ok(phrases) = read_lines(phrases_config) {
         info!(name: "get_phrases", "Read lines in!");
-        let phrases: Vec<String> = phrases.filter_map(|f| f.ok()).collect();
+        // Originally I used filter map but it turns out you can get an unlimited string of errors from filter_map if it's acting on Lines
+        let phrases: Vec<String> = phrases.map_while(Result::ok).collect();
         debug!(name: "get_phrases", phrases=?phrases, "phrases {:#?}", phrases);
         // this consumes the iterator, as rust-by-example notes
         // although this should also be obvious imo
@@ -1238,7 +1401,7 @@ fn get_phrases() -> Result<HashMap<std::string::String, std::string::String>> {
         // This is why it is so hard to just unwrap the result, because you're not handling your errors if you do that
 
         // If there are any messages, create a hash map from them
-        if phrases.len() != 0 {
+        if !phrases.is_empty() {
             info!(name: "get_phrases", "Parsing phrases");
             //The messages file must contain a single column with alternate entries in the following format, the first entry must be an animal sound,
             // IE:
@@ -1259,14 +1422,14 @@ fn get_phrases() -> Result<HashMap<std::string::String, std::string::String>> {
             }
             info!(name: "get_phrases", "Phrases succesfully parsed");
             trace!(name: "messagesmap", messagemap=?messagesmap, "messagesmap: {:#?}", messagesmap);
-            return Ok(messagesmap);
+            Ok(messagesmap)
         } else {
             error!(name: "get_phrases", "Phrases could not be parsed!");
-            return Err(anyhow!("Error extracting phrases!"));
+            Err(anyhow!("Error extracting phrases!"))
         }
     } else {
         error!(name: "get_phrases", "Error reading from file!");
-        return Err(anyhow!("Error reading from file!"));
+        Err(anyhow!("Error reading from file!"))
     }
 }
 
@@ -1283,22 +1446,21 @@ where
 #[derive(Debug, Clone)]
 enum Schedule {
     TV {
-        Monday: String,
-        Tuesday: String,
-        Wednesday: String,
-        Thursday: String,
-        Friday: String,
-        Default: Option<String>,
+        monday: String,
+        tuesday: String,
+        wednesday: String,
+        thursday: String,
+        friday: String,
+        default: Option<String>,
     },
     Nothing {
-        Message: String,
+        message: String,
     },
 }
 
 fn watch_a_thing(schedule: Schedule) -> String {
     impl fmt::Display for Schedule {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            self.to_string();
             write!(f, "{:?}", self)
             // or, alternatively:
             // fmt::Debug::fmt(self, f)
@@ -1308,35 +1470,29 @@ fn watch_a_thing(schedule: Schedule) -> String {
     let dayoftheweek = now.date_naive().weekday();
     debug!(name: "watch_a_thing", day=%dayoftheweek, "Day of week: {}", dayoftheweek);
 
-    let show = match schedule {
+    match schedule {
         Schedule::TV {
-            Monday,
-            Tuesday,
-            Wednesday,
-            Thursday,
-            Friday,
-            Default,
+            monday,
+            tuesday,
+            wednesday,
+            thursday,
+            friday,
+            default,
         } => {
-            let StringDefault: String;
-            if Default.is_none() {
-                StringDefault = "Westworld".to_string()
-            } else {
-                StringDefault = Default.clone().expect("The provided Default is a string")
-            }
+            let string_default = default.unwrap_or(String::from("Westworld"));
             let show = match dayoftheweek.number_from_monday() {
-                1 => Monday,
-                2 => Tuesday,
-                3 => Wednesday,
-                4 => Thursday,
-                5 => Friday,
-                _ => StringDefault,
+                1 => monday,
+                2 => tuesday,
+                3 => wednesday,
+                4 => thursday,
+                5 => friday,
+                _ => string_default,
             };
             debug!(name: "watch_a_thing", show=?show, "Today's show is {:#?}", show);
             show
         }
-        Schedule::Nothing { Message } => Message,
-    };
-    show
+        Schedule::Nothing { message } => message,
+    }
 }
 
 /// Tries to initiate open telemetry logging
@@ -1345,29 +1501,33 @@ fn watch_a_thing(schedule: Schedule) -> String {
 /// If a config path is not supplied, will search under /etc/serina/.env
 /// As try implies, is resistant to failure, will error if it cannot parse a config but will return None if it cannot find the proper variables.
 fn try_init_otel_logs(
-    config_path: Option<&str>,
+    config_path: Option<&PathBuf>,
 ) -> Option<Result<sdklogs::LoggerProvider, LogError>> {
     if let Some(config_path) = config_path {
         // Keep the compiler happy with the fact we never unwrap the success
-
+        let config_path = config_path.as_path();
         match dotenv::from_path(config_path) {
             Ok(_) => {
-                println!("Using supplied config path {} for .env!", config_path);
+                println!(
+                    "Using supplied config path {} for .env!",
+                    config_path.to_string_lossy()
+                );
             }
             Err(e) => {
                 panic!(
                     "Error encountered extracting .env using supplied config_path {}: {}",
-                    config_path, e
+                    config_path.to_string_lossy(),
+                    e
                 );
             }
         }
     } else {
         println!("Config path not supplied!");
         println!("Using config from default config path {}", CONFIG_PATH);
-        dotenv::from_path(CONFIG_PATH).unwrap_or_else(|_| {
+        let _ = dotenv::from_path(CONFIG_PATH).inspect_err(|e| {
             panic!(
-                "Should have been able to use default config path: {}!",
-                CONFIG_PATH
+                "Should have been able to use default config path: {}\n{}!",
+                CONFIG_PATH, e
             )
         });
     }
@@ -1421,12 +1581,12 @@ fn try_init_otel_logs(
             )
             .install_batch(runtime::Tokio);
 
-        return Some(pipeline);
+        Some(pipeline)
     } else {
         eprintln!("Could not retrieve either OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_SERVICE_NAME from environment variables!");
         eprintln!("Could not initialize open telemetry logging!");
-        return None;
-    };
+        None
+    }
 }
 
 #[cfg(test)]
@@ -1453,28 +1613,28 @@ mod tests {
     async fn gets_ellen_species() {
         // TODO: After refactor test for failure
         let species = get_ellen_species(Source::Notion);
-        assert_eq!(species.await.is_ok(), true);
+        assert!(species.await.is_ok());
 
         let species = get_ellen_species(Source::ApiKitsuneGay);
-        assert_eq!(species.await.is_ok(), true);
+        assert!(species.await.is_ok());
     }
 
     async fn watches() {
-        let MondayTV = "Static Shock".to_string();
-        let TuesdayTV = "Pokémon".to_string();
-        let WednesdayTV = "MLP Friendship is Magic".to_string();
-        let ThursdayTV = "The Borrowers".to_string();
-        let FridayTV = "Sherlock Holmes in the 22nd Century".to_string();
-        let SpookyTV = Some("Candle Cove".to_string());
+        let monday_tv = "Static Shock".to_string();
+        let tuesday_tv = "Pokémon".to_string();
+        let wednesday_tv = "MLP Friendship is Magic".to_string();
+        let thursday_tv = "The Borrowers".to_string();
+        let friday_tv = "Sherlock Holmes in the 22nd Century".to_string();
+        let spooky_tv = "Candle Cove".to_string();
 
         let tvschedule = {
             Schedule::TV {
-                Monday: MondayTV.clone(),
-                Tuesday: TuesdayTV.clone(),
-                Wednesday: WednesdayTV.clone(),
-                Thursday: ThursdayTV.clone(),
-                Friday: FridayTV.clone(),
-                Default: SpookyTV.clone(),
+                monday: monday_tv.clone(),
+                tuesday: tuesday_tv.clone(),
+                wednesday: wednesday_tv.clone(),
+                thursday: thursday_tv.clone(),
+                friday: friday_tv.clone(),
+                default: Some(spooky_tv.clone()),
             }
         };
         let now: DateTime<Local> = chrono::offset::Local::now();
@@ -1482,22 +1642,22 @@ mod tests {
         let show = watch_a_thing(tvschedule);
         match dayoftheweek {
             Weekday::Mon => {
-                assert_eq!(show, MondayTV)
+                assert_eq!(show, monday_tv)
             }
             Weekday::Tue => {
-                assert_eq!(show, TuesdayTV)
+                assert_eq!(show, tuesday_tv)
             }
             Weekday::Wed => {
-                assert_eq!(show, WednesdayTV)
+                assert_eq!(show, wednesday_tv)
             }
             Weekday::Thu => {
-                assert_eq!(show, ThursdayTV)
+                assert_eq!(show, thursday_tv)
             }
             Weekday::Fri => {
-                assert_eq!(show, FridayTV)
+                assert_eq!(show, friday_tv)
             }
             _ => {
-                assert_eq!(show, SpookyTV.unwrap())
+                assert_eq!(show, spooky_tv)
             }
         }
 

@@ -12,8 +12,6 @@ In dev mode, Serina switches her behavior:
 # TO DOS
 * Set up git build hooks for CI/CD
 * Merge in the changes w/ the KV store
-* Is this multithreaded? If not, it should be. 
-* Proper observability
 * Ability to enable and disable commands via CLI.
     // Maybe give the CLI user a list of commands to enable and then dynamically pass in disabled ones
     // something like let disabled = vec![""].into_iter().map(|x| x.to_string()).collect();
@@ -46,3 +44,11 @@ Third, if you have never installed Serina before, you will need to do something 
 
 And finally
 `cd Serina && cargo build --release && sudo mv target/release/Serina /usr/bin/serina`
+
+# Operation
+Serina takes command line options that expose multiple capabilities.
+These can be viewed by supplying `--help` or `-h`.
+In short, these allow a user to: 
+* Specify the `.env` file used
+* Specify the `phrases.txt` file used 
+* Specify whether otel logging, stderr logging, both, or none are used.
