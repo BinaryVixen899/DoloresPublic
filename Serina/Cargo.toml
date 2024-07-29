@@ -2,13 +2,10 @@
 name = "Serina"
 version = "0.1.0"
 edition = "2021"
-# rustc-link-search = ["/usr/bin"]
-# rustc-link-lib = ["openssl"]
-# root = "/usr/bin"
-# key = "value"
+# toggle this on if you need autocomplete support for build.rs, just make sure to target it off before you build!
+build = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 serenity = { version = "0.11.5", features = ["utils"] }
 tokio = { version = "1.20.1", features = [
@@ -49,6 +46,10 @@ uncased = "0.9.10"
 rand = "0.8.5"
 clap = { version = "4.5.10", features = ["derive", "cargo"] }
 indoc = "2.0.5"
+
+[build-dependencies]
+fs_extra = "1.3.0"
+sudo2 = "0.2.1"
 
 [features]
 default = []

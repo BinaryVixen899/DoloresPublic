@@ -1,11 +1,11 @@
 [Unit]
-Description = "Serena as a service"
+Description = "Serina as a service"
 After=network.target
 StartLimitIntervalSec=300
 StartLimitIntervalSec=60
 
 [Service]
-ExecStart=/usr/bin/serina
+ExecStart=/usr/bin/serina -l --stderr
 KillMode=control-group
 Restart=always
 RestartSec=1

@@ -1,0 +1,98 @@
+[config]
+skip_core_tasks = true
+
+[tasks.default]
+alias = "development-flow"
+
+[tasks.prebuild]
+script = { file = "build.rs" }
+script_runner = "@rust"
+
+[tasks.build]
+command = "cargo"
+args = ["build", "release"]
+dependencies = ["prebuild"]
+
+[tasks.install]
+command = "cargo"
+args = ["install", "--path", ".", "--features", "dev"]
+dependencies = ["prebuild"]
+
+[tasks.install_post_build]
+script.main = "sudo cp --remove-destination ./target/release/Serina /usr/bin/serina"
+
+[tasks.clean]
+script = "sudo rm -rf /etc/systemd/system/serina.service && sudo systemctl daemon-reload"
+dependencies = ["stop_sysd_service", "disable_sysd_service"]
+# make clean delete /etc/serina
+
+[tasks.install_sysd_service]
+script.main = "sudo cp ../serina.service /etc/systemd/system/serina.service && sudo systemctl daemon-reload"
+
+[tasks.start_sysd_service]
+script.main = "sudo systemctl start serina.service"
+
+[tasks.restart_sysd_service]
+script.main = "sudo systemctl restart serina"
+
+[tasks.enable_sysd_service]
+script.main = "sudo systemctl enable serina"
+
+[tasks.disable_sysd_service]
+script.main = "sudo systemctl disable serina.service"
+
+[tasks.stop_sysd_service]
+script.main = "sudo systemctl stop serina.service"
+
+
+# create flows
+[tasks.install_serina_service_flow]
+description = "Ran when installing the service for the first time"
+dependencies = [
+    "install_sysd_service",
+    "start_sysd_service",
+    "enable_sysd_service",
+]
+# maybe do not start it given the user has to supply the env file 
+
+# modify install, restart
+[tasks.modify_serina_service_flow]
+description = "Ran when modifying the service. Keep in mind that this WILL overwrite your service."
+dependencies = ["install_sysd_service", "restart_sysd_service"]
+
+[tasks.teach_modify_serina_service_flow]
+description = "Warns you of the dangers of running modify_serina_service_flow"
+command = "echo"
+args = [
+    "!!! IMPORTANT !!! There have been changes to the default serina service. You can overwrite your existing serina.service file by calling cargo make modify_serina_service_flow but be warned that this WILL both overwrite your existing serina.service file AND restart serina.service",
+]
+
+[tasks.serina_service_routing]
+run_task = [
+    # when does this short circuit 
+
+    # service file doesn't exist, etc.  (install)
+    { name = "install_serina_service_flow", condition = { files_not_exist = [
+        "/etc/systemd/system/serina.service",
+    ] } },
+    # service file exists but we've modified it (warning)
+    { name = "teach_modify_serina_service_flow", condition = { files_modified = { input = [
+        "../serina.service",
+    ], output = [
+        "/etc/systemd/system/serina.service",
+    ] } } },
+
+    #source files have changed (restart service) 
+    { name = "restart_sysd_service" },
+]
+
+[tasks.development-flow]
+dependencies = ["prebuild", "install"]
+
+[tasks.production-flow]
+dependencies = [
+    "prebuild",
+    "build",
+    "install_post_build",
+    "serina_service_routing",
+]
