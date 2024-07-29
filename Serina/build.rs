@@ -1,6 +1,7 @@
 //! ```cargo
 //! [dependencies]
 //! fs_extra  = "*"
+//! sudo2 = "0.2.1"
 //! ```
 use std::env;
 use std::fs::create_dir;
@@ -10,7 +11,7 @@ use std::process::exit;
 // Basic build script that only works for linux
 
 // use constants::{PHRASES_CONFIG_PATH, SERINA_CONFIG_PATH};
-use fs_extra::dir::{copy, *};
+use fs_extra::dir::{self, copy, *};
 use fs_extra::error::*;
 use std::fs;
 
@@ -30,13 +31,15 @@ const SERINA_CONFIG_PATH: &str = "/etc/serina";
 fn main() {
     let options = CopyOptions::new();
 
-    match Path::new(SERINA_CONFIG_PATH).try_exists() {
-        Ok(_) => {
+    match Path::new(SERINA_CONFIG_PATH).is_dir() {
+        true => {
             return println!("Existing serina installation!");
             println!("This must be an update!")
         }
-        Err(_) => {
+        false => {
             println!("New serina installation!");
+            sudo2::escalate_if_needed().expect("Cannot proceed without being sudo!");
+            dir::create(SERINA_CONFIG_PATH, false).unwrap();
         }
     };
     // TODO: Need to change this, extrapolate it out to Makefile.toml because it's against spec and may become impossible in the future
