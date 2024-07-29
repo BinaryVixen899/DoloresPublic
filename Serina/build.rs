@@ -39,6 +39,7 @@ fn main() {
             println!("New serina installation!");
         }
     };
+    // TODO: Need to change this, extrapolate it out to Makefile.toml because it's against spec and may become impossible in the future
     println!("Creating /etc/serina directory and copying example files!");
     let copy = copy("./template", SERINA_CONFIG_PATH, &options);
     if let Err(e) = copy.map_err(|e| e.kind) {

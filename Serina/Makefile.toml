@@ -5,7 +5,7 @@ skip_core_tasks = true
 alias = "development-flow"
 
 [tasks.badbuild]
-script = { file = "src/badbuild.rs" }
+script = { file = "build.rs" }
 script_runner = "@rust"
 
 # [tasks.install]
@@ -18,7 +18,8 @@ args = ["build", "--release"]
 # Make sure to switch this to build release
 
 [tasks.post_install]
-script.main = "sudo cp ../serina.service /etc/systemd/system/serina.service && mv ./target/release/Serina /usr/bin/serina"
+script.main = "sudo cp ../serina.service /etc/systemd/system/serina.service && sudo cp --remove-destination ./target/release/Serina /usr/bin/serina"
+# could remove the remove destination if we first check to see if files are identical prior to running
 
 dependencies = ["badbuild", "install"]
 [tasks.post_install_production]
