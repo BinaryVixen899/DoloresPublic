@@ -1,0 +1,32 @@
+[config]
+skip_core_tasks = true
+
+[tasks.default]
+alias = "development-flow"
+
+[tasks.badbuild]
+script = { file = "src/badbuild.rs" }
+script_runner = "@rust"
+
+# [tasks.install]
+# command = "cargo"
+# args = ["install", "--path", "."]
+
+[tasks.install]
+command = "cargo"
+args = ["build", "--release"]
+# Make sure to switch this to build release
+
+[tasks.post_install]
+script.main = "sudo cp ../serina.service /etc/systemd/system/serina.service && mv ./target/release/Serina /usr/bin/serina"
+
+dependencies = ["badbuild", "install"]
+[tasks.post_install_production]
+script.post = "sudo systemctl daemon-reload && sudo systemctl start serina.service && sudo systemctl enable serina"
+extend = "post_install"
+
+[tasks.development-flow]
+dependencies = ["badbuild", "install", "post_install"]
+
+[tasks.production-flow]
+dependencies = ["badbuild", "install", "post_install_production"]
