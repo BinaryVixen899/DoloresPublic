@@ -66,8 +66,6 @@ use tracing_subscriber::prelude::*;
 // CLI
 use clap::{Args, Parser};
 
-// mod serina;
-
 #[derive(Parser)]
 #[command(
     version,
@@ -130,12 +128,8 @@ use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 
+// Constants
 mod constants;
-// // Constants
-// // const ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
-// pub const HEADER_PREFIX: &str = "OTEL_EXPORTER_";
-// pub const CONFIG_PATH: &str = "/etc/serina/.env";
-// pub const PHRASES_CONFIG_PATH: &str = "/etc/serina/phrases.txt";
 use constants::CONFIG_PATH;
 use constants::HEADER_PREFIX;
 use constants::PHRASES_CONFIG_PATH;

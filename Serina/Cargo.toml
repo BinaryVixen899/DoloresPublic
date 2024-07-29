@@ -2,9 +2,6 @@
 name = "Serina"
 version = "0.1.0"
 edition = "2021"
-# rustc-link-search = ["/usr/bin"]
-# rustc-link-lib = ["openssl"]
-# key = "value"
 # toggle this on if you need autocomplete support for build.rs, just make sure to target it off before you build!
 build = false
 
@@ -57,4 +54,3 @@ sudo2 = "0.2.1"
 [features]
 default = []
 dev = []
-install = []

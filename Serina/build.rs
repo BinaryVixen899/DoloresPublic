@@ -3,29 +3,18 @@
 //! fs_extra  = "*"
 //! sudo2 = "0.2.1"
 //! ```
-use std::env;
-use std::fs::create_dir;
+use fs_extra::dir::{self, copy, *};
+use fs_extra::error::*;
 use std::path::Path;
 use std::process::exit;
 
 // Basic build script that only works for linux
-
-// use constants::{PHRASES_CONFIG_PATH, SERINA_CONFIG_PATH};
-use fs_extra::dir::{self, copy, *};
-use fs_extra::error::*;
-use std::fs;
-
-// please note that the following is very hacky and the actual way to do it is to separate out the needed types and such.
-// But screw that
-// const cwd: &str = env::var_os("CARGO_MAKE_WORKING_DIRECTORY").unwrap();
-// const cwpath: &str = cwd + "/src/constants.rs";
+// PLEASE DO NOT USE THIS AN ACTUAL BUILD SCRIPT.
+// ADD build = true TO EDIT, AND SET TO FALSE WHEN YOU ARE DONE EDITING
+// THIS SCRIPT VIOLATES THE BUILD SCRIPT SPEC AND SHOULD ONLY BE USED BY MAKEFILE.TOML
 
 // Constants
-// TODO: Pass these in via hardcoded env variables in Makefile.toml
-// TODO: have constants.rs constructed via Makefile.toml
-const HEADER_PREFIX: &str = "OTEL_EXPORTER_";
-const CONFIG_PATH: &str = "/etc/serina/.env";
-const PHRASES_CONFIG_PATH: &str = "/etc/serina/phrases.txt";
+// TODO: Pass these in via hardcoded env variables in Makefile.toml or have constants.rs constructed via Makefile.toml
 const SERINA_CONFIG_PATH: &str = "/etc/serina";
 
 fn main() {
@@ -33,16 +22,16 @@ fn main() {
 
     match Path::new(SERINA_CONFIG_PATH).is_dir() {
         true => {
-            return println!("Existing serina installation!");
-            println!("This must be an update!")
+            return println!(
+                "Existing serina installation!\nThis is probably an update!\nDoing nothing!"
+            );
         }
         false => {
             println!("New serina installation!");
-            sudo2::escalate_if_needed().expect("Cannot proceed without being sudo!");
+            sudo2::escalate_if_needed().expect("Given sudo because I need it!");
             dir::create(SERINA_CONFIG_PATH, false).unwrap();
         }
     };
-    // TODO: Need to change this, extrapolate it out to Makefile.toml because it's against spec and may become impossible in the future
     println!("Creating /etc/serina directory and copying example files!");
     let copy = copy("./template", SERINA_CONFIG_PATH, &options);
     if let Err(e) = copy.map_err(|e| e.kind) {
@@ -71,7 +60,4 @@ fn main() {
     };
     println!("Copied example files to directory");
     println!("Proceeding to installation!")
-
-    // Check if there is already a .env file or phrases_example.txt
-    // If this is the case, bail out
 }

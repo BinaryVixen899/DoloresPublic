@@ -1,5 +1,4 @@
 // Constants
-// const ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 pub const HEADER_PREFIX: &str = "OTEL_EXPORTER_";
 pub const CONFIG_PATH: &str = "/etc/serina/.env";
 pub const PHRASES_CONFIG_PATH: &str = "/etc/serina/phrases.txt";

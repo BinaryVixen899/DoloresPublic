@@ -8,20 +8,15 @@ alias = "development-flow"
 script = { file = "build.rs" }
 script_runner = "@rust"
 
-# [tasks.install]
-# command = "cargo"
-# args = ["install", "--path", "."]
-
 [tasks.install]
 command = "cargo"
 args = ["build", "--release"]
-# Make sure to switch this to build release
 
+# could remove the remove destination if we first check to see if files are identical prior to running
 [tasks.post_install]
 script.main = "sudo cp ../serina.service /etc/systemd/system/serina.service && sudo cp --remove-destination ./target/release/Serina /usr/bin/serina"
-# could remove the remove destination if we first check to see if files are identical prior to running
-
 dependencies = ["badbuild", "install"]
+
 [tasks.post_install_production]
 script.post = "sudo systemctl daemon-reload && sudo systemctl start serina.service && sudo systemctl enable serina"
 extend = "post_install"
