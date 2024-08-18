@@ -129,10 +129,10 @@ use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 
 // Constants
-// const ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
-const HEADER_PREFIX: &str = "OTEL_EXPORTER_";
-const CONFIG_PATH: &str = "/etc/serina/.env";
-const PHRASES_CONFIG_PATH: &str = "/etc/serina/phrases.txt";
+mod constants;
+use constants::CONFIG_PATH;
+use constants::HEADER_PREFIX;
+use constants::PHRASES_CONFIG_PATH;
 
 #[group]
 #[commands(ellenpronouns, ellenspecies /*fronting*/)]
@@ -830,17 +830,23 @@ async fn main() -> Result<()> {
 
     // Get response messages , if this fails return None
     let messages = get_phrases(&phrases);
-    let messagesmap: Option<HashMap<String, String>> = match messages {
-        Ok(m) => {
-            info!(name: "messagesmap", "Messages Map Constructed");
-            debug!(name: "messagesmap", "The messages map consists of {:?}", m);
-            Some(m)
+    let messagesmap: Option<_> = if messages.is_some() {
+        match messages.unwrap() {
+            Ok(m) => {
+                info!(name: "messagesmap", "Messages Map Constructed");
+                debug!(name: "messagesmap", "The messages map consists of {:?}", m);
+                Some(m)
+            }
+            Err(e) => {
+                error!(name: "messagesmap", error_text=?e, "Could not construct messages map because: {:#?}", e);
+                error!(name: "messagesmap", error_text=?e, "Falling back to default messages map!");
+                None
+            }
         }
-        Err(e) => {
-            error!(name: "messagesmap", error_text=?e, "Could not construct messages map because: {:#?}", e);
-            error!(name: "messagesmap", error_text=?e, "Falling back to default messages map!");
-            None
-        }
+    } else {
+        error!(name: "messagesmap", "No phrases.txt file exists");
+        error!(name: "messagesmap", "Falling back to default messages map!");
+        None
     };
 
     // Create an ARC to messagesmap, and a mutex to messagesmap
@@ -1378,7 +1384,7 @@ fn poll_notion(tx: Sender<String>) -> impl Stream<Item = Result<String>> {
 
 fn get_phrases(
     phrases_config: &PathBuf,
-) -> Result<HashMap<std::string::String, std::string::String>> {
+) -> Option<Result<HashMap<std::string::String, std::string::String>>> {
     // TODO: give different messages depending on whether phrases_config is default
     if phrases_config
         .to_str()
@@ -1387,49 +1393,55 @@ fn get_phrases(
     {
         println!("Using default phrases config path {}", PHRASES_CONFIG_PATH)
     } else {
-        println!("Using customer phrases config path {:?}", phrases_config)
+        println!("Using custom phrases config path {:?}", phrases_config)
     }
-    info!(name: "get_phrases", "Reading lines in");
-    if let Ok(phrases) = read_lines(phrases_config) {
-        info!(name: "get_phrases", "Read lines in!");
-        // Originally I used filter map but it turns out you can get an unlimited string of errors from filter_map if it's acting on Lines
-        let phrases: Vec<String> = phrases.map_while(Result::ok).collect();
-        debug!(name: "get_phrases", phrases=?phrases, "phrases {:#?}", phrases);
-        // this consumes the iterator, as rust-by-example notes
-        // although this should also be obvious imo
-        // also welcome back to Rust, where you are forced to handle your errors
-        // This is why it is so hard to just unwrap the result, because you're not handling your errors if you do that
+    // TODO: Need an entire thing from before where if the phrases config path does not exist, we return a NONE
+    if phrases_config.is_file() {
+        info!(name: "get_phrases", "Reading lines in");
+        if let Ok(phrases) = read_lines(phrases_config) {
+            info!(name: "get_phrases", "Read lines in!");
+            // Originally I used filter map but it turns out you can get an unlimited string of errors from filter_map if it's acting on Lines
+            let phrases: Vec<String> = phrases.map_while(Result::ok).collect();
+            debug!(name: "get_phrases", phrases=?phrases, "phrases {:#?}", phrases);
+            // this consumes the iterator, as rust-by-example notes
+            // although this should also be obvious imo
+            // also welcome back to Rust, where you are forced to handle your errors
+            // This is why it is so hard to just unwrap the result, because you're not handling your errors if you do that
 
-        // If there are any messages, create a hash map from them
-        if !phrases.is_empty() {
-            info!(name: "get_phrases", "Parsing phrases");
-            //The messages file must contain a single column with alternate entries in the following format, the first entry must be an animal sound,
-            // IE:
-            // Mow
-            // Something about sneps
-            let mut messagesmap = HashMap::new();
-            for (i, m) in phrases.iter().enumerate() {
-                // No possible way for this to be a non even number, meaning we should be fine
-                // Although we will have to skip ahead if i is an odd number
-                // And manually handle the break at the end
-                if i % 2 == 0 {
-                    messagesmap.insert(m.clone().to_lowercase(), phrases[i + 1].clone());
-                } else if i == phrases.len() {
-                    break;
-                } else {
-                    continue;
+            // If there are any messages, create a hash map from them
+            if !phrases.is_empty() {
+                info!(name: "get_phrases", "Parsing phrases");
+                //The messages file must contain a single column with alternate entries in the following format, the first entry must be an animal sound,
+                // IE:
+                // Mow
+                // Something about sneps
+                let mut messagesmap = HashMap::new();
+                for (i, m) in phrases.iter().enumerate() {
+                    // No possible way for this to be a non even number, meaning we should be fine
+                    // Although we will have to skip ahead if i is an odd number
+                    // And manually handle the break at the end
+                    if i % 2 == 0 {
+                        messagesmap.insert(m.clone().to_lowercase(), phrases[i + 1].clone());
+                    } else if i == phrases.len() {
+                        break;
+                    } else {
+                        continue;
+                    }
                 }
+                info!(name: "get_phrases", "Phrases succesfully parsed");
+                trace!(name: "messagesmap", messagemap=?messagesmap, "messagesmap: {:#?}", messagesmap);
+                Some(Ok(messagesmap))
+            } else {
+                error!(name: "get_phrases", "Phrases could not be parsed!");
+                Some(Err(anyhow!("Error extracting phrases!")))
             }
-            info!(name: "get_phrases", "Phrases succesfully parsed");
-            trace!(name: "messagesmap", messagemap=?messagesmap, "messagesmap: {:#?}", messagesmap);
-            Ok(messagesmap)
         } else {
-            error!(name: "get_phrases", "Phrases could not be parsed!");
-            Err(anyhow!("Error extracting phrases!"))
+            error!(name: "get_phrases", "Error reading from file!");
+            Some(Err(anyhow!("Error reading from file!")))
         }
     } else {
-        error!(name: "get_phrases", "Error reading from file!");
-        Err(anyhow!("Error reading from file!"))
+        info!(name: "get_phrases", "Phrases config file either does not exist or is not accessible");
+        None
     }
 }
 
