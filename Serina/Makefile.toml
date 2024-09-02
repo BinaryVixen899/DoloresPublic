@@ -85,6 +85,7 @@ run_task = [
     #source files have changed (restart service) 
     { name = "restart_sysd_service" },
 ]
+# TODO INTELLIGENT RESTARTS
 
 [tasks.development-flow]
 dependencies = ["prebuild", "install"]
