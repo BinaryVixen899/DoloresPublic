@@ -8,18 +8,24 @@
 // TODO specify a folder for config
 // TODO one day do autocomplete. One day. https://docs.rs/clap_complete/latest/clap_complete/dynamic/shells/enum.CompleteCommand.html
 
+use std::borrow::Borrow;
 //Standard
 use std::collections::HashMap;
 use std::fmt::Debug;
 
+use std::fmt::Display;
+use std::future::Future;
 use std::ops::Deref;
+use std::process::exit;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread::spawn;
 use std::time::Duration;
-use std::{env, fmt, task};
+use std::{default, env, fmt, task};
 
 use clap::builder::ArgPredicate;
+use futures_core::FusedFuture;
+use futures_util::future::err;
 // use futures_util::sink::Send;
 use indoc::{eprintdoc, printdoc};
 
@@ -30,7 +36,6 @@ use notion::NotionApi;
 use opentelemetry_sdk::logs::Config;
 use opentelemetry_sdk::runtime;
 //Serenity
-use serenity::async_trait;
 use serenity::client::bridge::gateway::ShardManager;
 use serenity::framework::standard::macros::{command, group};
 use serenity::framework::standard::{CommandResult, StandardFramework};
@@ -41,6 +46,7 @@ use serenity::model::gateway::Ready;
 use serenity::model::prelude::{ChannelId, GuildChannel, UserId};
 use serenity::prelude::*;
 use serenity::utils::MessageBuilder;
+use serenity::{async_trait, FutureExt};
 
 //AsyncandConcurrency
 use async_stream::try_stream;
@@ -48,6 +54,7 @@ use futures_core::stream::{self, Stream};
 use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
 use strum::EnumString;
+use tokio::runtime::Handle;
 use tokio::sync::oneshot::{self, Sender};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -69,6 +76,80 @@ use tracing_subscriber::prelude::*;
 
 // CLI
 use clap::{Args, Parser};
+
+use futures_util::future::{join_all, try_join_all};
+use std::error::Error as RegularError;
+#[derive(Default, Debug, Clone)]
+struct FatalError {
+    msg: String,
+}
+
+impl FatalError {
+    fn new(msg: &str) -> FatalError {
+        FatalError {
+            msg: msg.to_string(),
+        }
+    }
+}
+
+impl Display for FatalError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.msg)
+    }
+}
+
+impl std::error::Error for FatalError {
+    fn description(&self) -> &str {
+        &self.msg
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+
+struct NonFatalError;
+
+impl Display for NonFatalError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", "test")
+    }
+}
+
+impl std::error::Error for NonFatalError {}
+
+#[derive(Debug, Clone)]
+enum TaskErrors {
+    FatalError(FatalError),
+    NonFatalError(NonFatalError),
+}
+
+impl From<FatalError> for TaskErrors {
+    fn from(err: FatalError) -> Self {
+        Self::FatalError(err)
+    }
+}
+
+// impl From<FatalError> for &TaskErrors {
+//     fn from(err: FatalError) -> Self {
+//         Self::FatalError(err)
+//     }
+// }
+
+impl From<NonFatalError> for TaskErrors {
+    fn from(err: NonFatalError) -> Self {
+        Self::NonFatalError(err)
+    }
+}
+
+impl Display for TaskErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TaskErrors::FatalError(fa) => write!(f, "{}", fa.msg),
+            TaskErrors::NonFatalError(nfa) => write!(f, "{}", nfa),
+        }
+    }
+}
+
+impl std::error::Error for TaskErrors {}
 
 #[derive(Parser)]
 #[command(
@@ -122,7 +203,7 @@ struct Logs {
 }
 
 //Misc
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use chrono::prelude::*;
 use rand::seq::SliceRandom;
 use reqwest::header::ACCEPT;
@@ -352,26 +433,19 @@ impl EventHandler for Handler {
         // The problem with awaiting a future in your current function is that once you've done that you are suspending execution until the future is complete
         // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever.
         // Except that is no longer true here, because we do watch_westworld in its own task
-        let another_conn = ctx.clone();
-        tokio::spawn(async move {
-            watch_westworld(&another_conn, None).await;
-        });
 
-        info!(name: "ready", "Made it past the activity barrier");
+        info!(name: "ready", "Made it past the initial setup");
 
-        /*  Introducing the stream and pinning it mutably,
-         this is necessary in order to use next below because next takes a mutual reference NOT ownership
-         Pinning it mutably moves it to the stack
-        */
+        /*  Introducing the stream */
 
         let species_stream = poll_notion(Characteristics::Species, None);
         let pronouns_stream = poll_notion(Characteristics::Pronouns, None);
 
         info!(name: "poll_notion", "poll_notion streams created!");
 
-        // Check to see if speciesupdateschannel exists, if it does not exist then create it
+        // Check to see if speciesupdateschannel exists,
         //If we cannot create it, then quit
-        // Set the specieschannelid so that we can update it once we find it
+        // Set the specieschannelid to None so that we can update it once we find it
         let mut specieschannelid = None;
         {
             for k in channels {
@@ -387,22 +461,22 @@ impl EventHandler for Handler {
             }
         };
 
-        // Check to see if speciesupdateschannel exists, if it does not exist then create it
-        let mut map = JsonMap::new();
-
-        let mut channel: Result<GuildChannel> = Err(anyhow!("something"));
+        //if it does not exist then create it
         if specieschannelid.is_none() {
             let json = json!("speciesupdates");
+            let mut map = JsonMap::new();
             error!(name: "ready_channel", "Could not find speciesupdates channel, creating one!");
             map.insert("name".to_string(), json);
-            if let Ok(chnl) = ctx
+            if let Ok(chnl) = &ctx
+                .clone()
                 .http
                 .create_channel(511743033117638656, &map, None)
                 .await
             {
-                channel = Ok(chnl);
+                specieschannelid = Some(chnl.id.0);
+                let specieschannelid = specieschannelid.unwrap();
+                info!(name: "ready_channel", specieschannel=%specieschannelid, "Species channel created!: {:?}", specieschannelid);
             } else {
-                channel = Err(anyhow!("something"));
                 //TODO: If the request fails let's crash and tell someone to create it manually
                 error!(name:"send_species", "Could not create species channel");
                 quit(&ctx).await;
@@ -411,71 +485,239 @@ impl EventHandler for Handler {
         }
         // Clone the connections
         let ctx_clone_one = ctx.clone();
-        let ctx_clone_two = ctx.clone();
+        let ctx_clone_two: Context = ctx.clone();
+        let specieschannelid = specieschannelid.unwrap();
 
-        // TODO: The issue is in species_handle, it should be checking specieschannelid
-        // Spawn two tasks that operate asynchronously
-        let species_handle = tokio::spawn(async move {
-            let channel = channel.unwrap();
-            info!(name: "ready_channel", specieschannel=%channel.id.0, "Species channel created!: {:?}", channel.id.0);
-            let specieschannelid = channel.id.0;
-            info!(name:"send_species", "Starting species loop");
+        // Spawn two streams that operate asynchronously
+
+        let species_future = async move {
+            info!(name:"ready", "Starting species loop");
             if let Err(e) = speciesloop(&ctx_clone_one, specieschannelid, species_stream).await {
-                error!(name:"send_species", error_text=?e, "Species loop failed: {:#?}", e);
-                quit(&ctx_clone_one).await;
-                return Err(e);
+                error!(name:"ready", error_text=?e, "Species loop failed: {:#?}", e);
+                return Err(FatalError::default())?;
             }
             Ok(())
-        });
+        };
 
         info!(name:"send_species", "Species loop started!");
 
-        let pronouns_handle = tokio::spawn(async move {
+        let pronouns = async move {
             info!("Starting pronouns loop");
-            if let Err(e) = pronounsloop(
-                &ctx_clone_two,
-                specieschannelid.expect("A valid updates channel ID"),
-                pronouns_stream,
-            )
-            .await
-            {
-                error!(name: "pronouns_loop", error_text=?e, "Pronouns loop failed: {:#?}", e);
-                quit(&ctx_clone_two).await;
-                return Err(e);
-            };
+            if let Err(e) = pronounsloop(&ctx_clone_two, specieschannelid, pronouns_stream).await {
+                error!(name:"ready", error_text=?e, "Pronouns loop failed: {:#?}", e);
+                let fa = FatalError::new(&e.to_string());
+                return Err(fa);
+            }
             Ok(())
-        });
+        };
 
         info!(name:"send_species", "Pronouns loop started!");
 
-        let _ = tokio::try_join!(species_handle, pronouns_handle);
+        let wwctx = ctx.clone();
+        let watching_future = async move {
+            if let Err(e) = watch_westworld(&wwctx, None).await {
+                return Err(FatalError::default());
+            }
+            Ok(())
+        };
+
+        // THE MONSTER
+
+        //TO TRY:
+        // JOIN SET
+        // STRUCTS
+        // INDEPENDENT MANAGER THREADS
+        // JUST DONT CARE
+
+        // WHAT I HAVE TRIED:
+
+        // CURRENTLY TRYING
+        // Shared  FUTURES
+
+        // while we are below the number of restarts, if something fails restart that thing
+        // if we've reached the max number of restarts or we hit a fatal error, dive out with quit
+        // Make sure watch_westworld is always restarted
+
+        // Initial Run
+        // Create shared futures, restarts counter,
+        let watcher_future = watching_future.shared();
+        let shared_pronouns_stream = pronouns.shared();
+        let shared_species_future = species_future.shared();
+        let mut restarts = 0;
+        let mut not_a_wh_restart = true;
+        let mut whh: Option<JoinHandle<()>> = None;
+
+        let mut watcher_join_handle = tokio::spawn(watcher_future.clone());
+        let mut pronouns_join_handle = tokio::spawn(shared_pronouns_stream.clone());
+        let mut species_join_handle = tokio::spawn(shared_species_future.clone());
+        // let mut whh_handle = watcher_join_handle.abort_handle();
+        // let mut phh_handle = pronouns_join_handle.abort_handle();
+        // let mut shh_handle = species_join_handle.abort_handle();
+
+        // whh_handle = watcher_join_handle.abort_handle();
+        // phh_handle = pronouns_join_handle.abort_handle();
+        // shh_handle = species_join_handle.abort_handle();
+        info!(name:"ready", "made it to res");
+        let res = tokio::try_join!(
+            flatten(watcher_join_handle),
+            flatten(pronouns_join_handle),
+            flatten(species_join_handle)
+        );
+        match res {
+            Ok((first, second, third)) => {
+                info!(name:"ready", "made it after res {:?} {:?} {:?}", first, second, third);
+            }
+            Err(err) => {
+                info!(name: "ready", "processing failed; error = {}", err);
+            }
+        };
+        info!(name:"ready", "made it after res");
+
+        // );
+        // let mut originalhandles = vec![
+        //     watcher_join_handle,
+        //     pronouns_join_handle,
+        //     species_join_handle,
+        // ];
+        // try_join_all(originalhandles).await;
+        while restarts < 5 {
+            // let mut whh = None;
+            info!(name:"ready", "made it inside");
+
+            let mut handles = vec![];
+            // TODO: do a try_join on the vec, this will have us waiting
+            // TODO: Call a function that handles The Alive Ones
+            //this is imprecise but it will have to do7g8yun mn b
+            if watcher_future.clone().peek().is_some() {
+                not_a_wh_restart = false;
+                error!(name:"ready", "watcher died! Restarting!");
+                let whh = tokio::spawn(watcher_future.clone());
+                // let handle = start_shared_worker(WorkerType::watcher, &ctx.clone(), wh.clone());
+                handles.push(whh);
+            }
+            if shared_pronouns_stream.clone().peek().is_some() {
+                restarts += 1;
+                not_a_wh_restart = true;
+                error!(name:"ready", "Pronouns stream died! Restarting!");
+                let phhh = tokio::spawn(shared_pronouns_stream.clone());
+                // let handle =
+                //     start_shared_worker(WorkerType::pronounsloop, &ctx.clone(), ph.clone());
+                // handles.push(phhh);
+            }
+            if shared_species_future.clone().peek().is_some() {
+                restarts += 1;
+                not_a_wh_restart = true;
+                error!(name:"ready", "Species stream died! Restarting!");
+                let shhh = tokio::spawn(shared_species_future.clone());
+                // let handle = start_shared_worker(WorkerType::speciesloop, &ctx.clone(), sh.clone());
+                handles.push(shhh);
+            }
+            error!("handles {:?}", handles);
+            if handles.is_empty() {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                continue;
+            } else {
+                try_join_all(handles).await;
+            }
+            // TODO: USE A DICTIONARY
+            // TODO: Do this on a daily basis, but then we would have to handle situations where nothing has changed
+        }
+        eprintln!("Max restarts reached!");
+        println!("Exiting out!");
+        // Shut down all handles
+        // Use a joinset???
+
+        quit(&ctx.clone()).await;
+        // TODO: Abort all
+
+        // TODO: Quit out here because we have one too many restarts
     }
+}
+// Trying to convert a joinhandle of any error (or maybe anyhow error?) to a result of something implementing an error
+// https://stackoverflow.com/questions/71751269/how-to-convert-anyhow-error-to-std-error
+// they're literally calling it on it
+async fn flatten<T: Into<TaskErrors>>(handle: JoinHandle<Result<(), T>>) -> Result<(), TaskErrors> {
+    match handle.await {
+        Ok(Ok(result)) => Ok(()),
+        Ok(Err(err)) => Err(err.into()),
+        Err(err) => Err(FatalError::new("Some Join Errors"))?,
+    }
+}
+
+// async fn flatten_ref<T: Into<TaskErrors>>(
+//     handle: JoinHandle<Result<(), &T>>,
+// ) -> Result<(), TaskErrors> {
+//     match handle.await {
+//         Ok(Ok(result)) => Ok(()),
+//         Ok(Err(err)) => Err(err.into()),
+//         Err(err) => Err(FatalError::new("Some Join Errors"))?,
+//     }
+// }
+
+// fn start_shared_worker<F>(worker: WorkerType, context: &Context, handle: F) -> JoinHandle<()>
+// where
+//     F: Future + Send + 'static,
+//     F::Output: Send + 'static,
+// {
+//     // match worker {
+//     //     WorkerType::watcher => {
+//     let ctx = context.clone();
+//     // let handle = async move {
+//     //     watch_westworld(&ctx, None).await;
+//     // };
+//     let worker = tokio::spawn(handle);
+//     return worker;
+//     // } // WorkerType::pronounsloop => {
+//     //     let pronouns = async move {
+//     //         info!("Starting pronouns loop");
+//     //         pronounsloop(
+//     //             &context,
+//     //             specieschannelid.expect("A valid updates channel ID"),
+//     //             pronouns_stream,
+//     //         )
+//     //         .await;
+//     //     };
+
+//     //     return pronouns;
+//     // }
+//     // WorkerType::speciesloop => {
+//     //     return worker;
+//     // }
+// }
+// // }
+
+enum WorkerType {
+    watcher,
+    speciesloop,
+    pronounsloop,
 }
 
 async fn quit(ctx: &Context) {
     let data_read: tokio::sync::RwLockReadGuard<'_, TypeMap> = ctx.data.read().await;
     //nobody can update the species while i'm reading it
     // hypothetically, this could deadlock, maybe?
-    let oneshot_tx_arc = {
+    let oneshot_tx_arc: Arc<Sender<String>> = {
         data_read
             .get::<OneShotContainer>()
             .expect("Expected SendContainer in TypeMap.")
             .to_owned()
     };
+    // closed.await
+    let oneshot_tx = Arc::into_inner(oneshot_tx_arc);
+    if oneshot_tx.is_none() {
+        if let Some(manager) = data_read.get::<ShardManagerContainer>() {
+            warn!(name: "shutdown", "Shutting down shards.");
+            manager.lock().await.shutdown_all().await;
+            warn!(name: "shutdown", "All shards shutdown.")
+        }
+    } else {
+        let string: String = String::from("Quit was called!");
+        let _ = oneshot_tx.unwrap().send(string.clone());
+    }
 
-    let oneshot_tx = Arc::into_inner(oneshot_tx_arc).unwrap();
     // TODO: Shut down this
 
-    let string: String = String::from("Quit was called!");
-
     // Using `let _ =` to ignore send errors.
-    let _ = oneshot_tx.send(string);
-
-    if let Some(manager) = data_read.get::<ShardManagerContainer>() {
-        warn!(name: "shutdown", "Shutting down shards.");
-        manager.lock().await.shutdown_all().await;
-        warn!(name: "shutdown", "All shards shutdown.")
-    }
 }
 
 async fn speciesloop<S: Stream<Item = Result<String>>>(
@@ -486,7 +728,6 @@ async fn speciesloop<S: Stream<Item = Result<String>>>(
     info!(name: "speciesstream", "Species stream started!");
     // info!(name:"send_species", arc_count=%Arc::strong_count(&species), "Starting species loop!");
     info!(name:"speciesstream",  "Starting species loop!");
-
     // TODO: Need to unpack the Ellen species
     // TODO: Fallback to speciesstream
 
@@ -503,21 +744,22 @@ async fn speciesloop<S: Stream<Item = Result<String>>>(
 
         let mut ellen = ellen_lock.lock().await;
 
-        // This is where I would put witty comments, IF I HAD ANY
-        if let Ok(species) = species {
-            info!(name: "species_loop", species=?species, lastpronouns=?ellen.species, "Checking Species!");
-            if ellen.species.as_deref() != Some(species.as_str()) {
-                if ellen.species.is_none() {
-                    ellen.species = Some(species);
-                    info!(name: "species_loop", "Initial Species loop run");
-                    continue;
-                }
+        // Use a default if species is an error
+        let species = species.unwrap_or(String::from("Kitsune"));
+        // pass back errors that the stream generatedb n00
+        info!(name: "species_loop", species=?species, lastpronouns=?ellen.species, "Checking Species!");
+        if ellen.species.as_deref() != Some(species.as_str()) {
+            if ellen.species.is_none() {
                 ellen.species = Some(species);
-                send_species(ctx, specieschannelid).await;
+                info!(name: "species_loop", "Initial Species loop run");
+                continue;
             }
+            ellen.species = Some(species);
+            send_species(ctx, specieschannelid).await;
         }
     }
-    Err(anyhow!("Pronouns loop failed!"))
+    Err(anyhow!("Stream Ended"))
+
     //     match species {
     //         Ok(transformation) => {
     //             // If this is the first time we are doing this species will be None
@@ -956,6 +1198,7 @@ async fn main() -> Result<()> {
         e = bot => {
             match e {
                 Ok(_) => {
+                    warn!(name: "main", "Bot shut down?!")
                 }
                 Err(e) => {
                     error!(name: "main", error_text=?e, "Discord Bot Failure: {:#?}", e);
@@ -1095,6 +1338,7 @@ async fn discord(
 
     info!(name: "discord", "Starting Discord client");
     client.start().await?;
+    info!(name: "discord", "Ending Discord client");
     Ok(())
 }
 
@@ -1208,7 +1452,7 @@ async fn ellenpronouns(ctx: &Context, msg: &Message) -> CommandResult {
 
 // Non Discord Functions //
 
-async fn watch_westworld(ctx: &Context, fetch_duration: Option<Duration>) {
+async fn watch_westworld(ctx: &Context, fetch_duration: Option<Duration>) -> Result<()> {
     //TODO: We need a dev mode off switch
     // TODO: Change other attributes here to distuinguish devlores
 
@@ -1248,6 +1492,7 @@ async fn watch_westworld(ctx: &Context, fetch_duration: Option<Duration>) {
             }
         }
     }
+    Err(anyhow!("Watching Failed"))
 }
 
 enum Source {
@@ -1270,10 +1515,8 @@ async fn get_ellen_species(src: Source) -> Result<String> {
                 <BlockId as std::str::FromStr>::from_str("b9a5a246df244244a5345fb3d8ac36a8")
                     .expect("We got a valid BlockID!");
             debug!(name: "get_ellen_species", speciesblockid = %speciesblockid, "The speciesblockid is {:#?}", speciesblockid);
-            let speciesblock: notion::models::ListResponse<notion::models::Block> = notion
-                .get_block_children(speciesblockid)
-                .await
-                .expect("We were able to get the block children");
+            let speciesblock: notion::models::ListResponse<notion::models::Block> =
+                notion.get_block_children(speciesblockid).await?;
             debug!(name: "get_ellen_species", "Species obtained from Notion");
             trace!(name: "get_ellen_species", "Block children obtained!");
             // 679b29a2-c780-4657-b154-264b0bb04ab4
@@ -1390,19 +1633,18 @@ fn poll_notion(
     let sleep_time = sleep_time.unwrap();
 
     try_stream! {
+        // TODO: Why in the hell does this not actually return errors?!?!?
         loop {
             info!(name: "poll_notion", "Polling notion for");
             // The ? hands the error off to the caller
             match characteristic {
                 Characteristics::Pronouns => {
-                    if let Ok(result) = get_ellen_pronouns(Source::Notion).await {
-                        yield result
-                    }
+                    let result = get_ellen_pronouns(Source::Notion).await?;
+                    yield result;
                 },
                 Characteristics::Species => {
-                    if let Ok(result) = get_ellen_species(Source::Notion).await {
-                        yield result
-                    }
+                    let result = get_ellen_species(Source::Notion).await?;
+                    yield result;
                 }
             };
             info!(name: "poll_notion", characteristic=?characteristic, "${:?} obtained from notion!", characteristic);
