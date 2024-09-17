@@ -1485,27 +1485,28 @@ async fn watch_westworld(ctx: Context, fetch_duration: Option<Duration>) -> Resu
             ))
             .await;
             info!(name: "watch_westworld", "Dev Mode Watching activity set!");
-            debug!(name: "watch_westworld", "Watch Westworld sleeping for 60 seconds");
-            if let Some(d) = fetch_duration {
-                tokio::time::sleep(Duration::from_secs(d.as_secs())).await;
-            } else {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-            }
         } else {
-            ctx.set_activity(Activity::watching(thing)).await;
+            ctx.set_activity(Activity::watching(
+                "🎶🎶🎶Snepgirl on a leash, you can feed her treats!🎶🎶🎶",
+            ))
+            .await;
             info!(name: "watch_westworld", "Watching activity set!");
         }
-        // TODO FIX BUG
-        // match fetch_duration {
-        //     Some(d) => {
-        //         debug!(name: "watch_westworld", "Watch Westworld sleeping for {:#?} seconds", d);
-        //         tokio::time::sleep(Duration::from_secs(d.as_secs())).await;
-        //     }
-        //     None => {
-        //         debug!(name: "watch_westworld", "Watch Westworld sleeping for 84600 seconds");
-        //         tokio::time::sleep(Duration::from_secs(86400)).await;
-        //     }
-        // }
+        match fetch_duration {
+            Some(d) => {
+                debug!(name: "watch_westworld", "Watch Westworld sleeping for {:#?} seconds", d);
+                tokio::time::sleep(Duration::from_secs(d.as_secs())).await;
+            }
+            None => {
+                if cfg!(feature = "dev") {
+                    debug!(name: "watch_westworld", "Watch Westworld sleeping for 60 seconds");
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                } else {
+                    debug!(name: "watch_westworld", "Watch Westworld sleeping for 84600 seconds");
+                    tokio::time::sleep(Duration::from_secs(86400)).await;
+                }
+            }
+        }
     }
     return Err(FatalError::default())?;
 }
