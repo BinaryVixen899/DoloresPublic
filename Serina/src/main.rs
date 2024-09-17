@@ -505,7 +505,7 @@ impl EventHandler for Handler {
 
         // info!(name:"ready", "made it to res");
         // let res = tokio::try_join!(
-        //     flatten(watcher_join_handle),
+        //     async(watcher_join_handle),
         //     flatten(pronouns_join_handle),
         //     flatten(species_join_handle)
         // );
@@ -557,7 +557,8 @@ impl EventHandler for Handler {
                         Ok(Err(output)) => match output {
                             TaskErrors::FatalError(e) => {
                                 error!(name:"species_task", "Species loop encountered a fatal error and will not be restarted!");
-                                Err::<(), FatalError>(e).unwrap();
+                                // Err::<(), FatalError>(e).unwrap();
+                                break;
                             }
                             TaskErrors::NonFatalError(_) => {
                                 restarts = &restarts + 1;
@@ -570,7 +571,8 @@ impl EventHandler for Handler {
                         Err(_) => break,
                     }
                 }
-                // return Err::<(), anyhow::Error>(anyhow!("return"));
+                return Err::<(), anyhow::Error>(anyhow!("Managerial thread died!"));
+                // TODO: Return later and change this to take an error from iniside the loop
             }
         });
 
@@ -589,7 +591,7 @@ impl EventHandler for Handler {
                         Ok(Err(output)) => match output {
                             TaskErrors::FatalError(e) => {
                                 error!(name:"pronouns_task", "Pronouns loop encountered a fatal error and will not be restarted!");
-                                Err::<(), FatalError>(e).unwrap();
+                                break;
                             }
                             TaskErrors::NonFatalError(_) => {
                                 restarts = &restarts + 1;
@@ -602,12 +604,16 @@ impl EventHandler for Handler {
                         Err(_) => break,
                     }
                 }
+                return Err::<(), anyhow::Error>(anyhow!("Managerial thread died!"));
+                // TODO: Return later and change this to take an error from iniside the loop
             }
         });
 
-        try_join!(pronouns_manager, species_manager);
+        let result = try_join!(async { pronouns_manager.await? }, async {
+            species_manager.await?
+        },);
 
-        println!("Managerial thread died!");
+        println!("Irrecoverable error!");
 
         quit(&ctx.clone()).await;
     }
