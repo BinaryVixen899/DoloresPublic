@@ -1487,7 +1487,7 @@ async fn watch_westworld(ctx: Context, fetch_duration: Option<Duration>) -> Resu
             info!(name: "watch_westworld", "Dev Mode Watching activity set!");
         } else {
             ctx.set_activity(Activity::watching(
-                "🎶🎶🎶Snepgirl on a leash, you can feed her treats!🎶🎶🎶",
+                "The digital data flow that makes up our lives 💾💽💻",
             ))
             .await;
             info!(name: "watch_westworld", "Watching activity set!");
