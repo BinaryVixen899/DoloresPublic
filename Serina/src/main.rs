@@ -481,8 +481,11 @@ impl EventHandler for Handler {
 
         // Create Watcher Task
         //TODO: Implement a manager for this just because, return an error if watcher_handle fails or if the loop exits and restart until the cows come home
+        let watcher_ctx = ctx.clone();
         let _watcher_handle = tokio::spawn({
             async move {
+                // Call manually before we schedule future runs, that way we don't have to wait a whole day to get an activity status.
+                let _ = watch_westworld(watcher_ctx.clone()).await;
                 loop {
                     let _ = scheduler.run_pending().await;
                     tokio::time::sleep(Duration::from_secs(10)).await;
@@ -1110,14 +1113,13 @@ async fn discord(
         framework
     };
     trace!(name: "discord", "Framework constructed!");
-    // TODO: Implement custom debug method with newtype in order to print configuration
     // Get the token
     let token = env::var("DISCORD_TOKEN").expect("A valid token");
     trace!(name: "discord", "Token obtained!");
     // Declare intents (these determine what events the bot will receive )
     let intents =
         GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT | GatewayIntents::GUILDS;
-    // info!("Intents are {:?}", intents);
+    info!("Intents are {:?}", intents);
     // Build the client
     let mut client = Client::builder(token, intents)
         .event_handler(Handler)
@@ -1151,8 +1153,7 @@ async fn discord(
 }
 
 // Discord Commands Section
-//TODO: REFACTOR ALL BELOW!
-// Also, what happens if ellenspecis or ellenpronouns fail the reply? Does the whole thing crash? If not, need to log
+//TODO: REFACTOR ALL Discord Commands!
 
 #[command]
 async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
@@ -1166,48 +1167,13 @@ async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
             "Kitsune".to_string()
         }
     };
-    // let species = match response {
-    //     Ok(r) => {
-    //         let species = match r.error_for_status() {
-    //             Ok(r) => r.text().await.expect("A valid species string"),
 
-    //             Err(e) => {
-    //                 error!(
-    //                     "We encountered an error, so we used Notion as a backup {}",
-    //                     e
-    //                 );
-    //                 get_ellen_species(Source::Notion)
-    //                     .await
-    //                     .expect("We got a species")
-    //             }
-    //         };
-    //         species
-    //     }
-    //     Err(e) => return Err(e.into()),
-    // };
     info!(name: "ellenspecies", species=%species, "species {}", species);
     let content = format!("Ellen is a {}", species);
-    // let content = content.as_str();
     let response = MessageBuilder::new().push(&content).build();
-    // let response = response.as_str();
     msg.reply(ctx, &response).await?;
     debug!(name: "ellenspecies", content=?content, response=?response, "content: {:#?}, response: {:#?}", &content, response);
     info!(name: "ellenspecies", "Ellen species delivered to requestor");
-    // ev.send(&mut honeycomb_client);
-    // match ev.send(&mut honeycomb_client) {
-    //     Ok(()) => {
-    //         let response = honeycomb_client.responses().iter().next().unwrap();
-    //         let respstring = response.status_code.unwrap();
-    //         println!("{}", respstring.as_str());
-    //         assert_eq!(response.error, None);
-    //     }
-    //     Err(e) => {
-    //         println!("Could not send event: {}", e);
-    //     }
-    // }
-    // honeycomb_client.flush();
-    // honeycomb_client.close();
-
     Ok(())
 }
 
@@ -1239,25 +1205,6 @@ async fn ellenpronouns(ctx: &Context, msg: &Message) -> CommandResult {
     Ok(())
 }
 
-// #[command]
-// async fn fronting(ctx: &Context, msg: &Message) -> CommandResult {
-//     println!("I have received the command.");
-//     let client = reqwest::Client::new();
-//     let result = client
-//         .get("https://api.kitsune.gay/Fronting")
-//         .header(ACCEPT, "application/json")
-//         .send()
-//         .await?;
-
-//     let alter = result.text().await?;
-//     println!("I have gotten the {}", alter);
-//     let content = format!("{} is in front", alter);
-//     let response = MessageBuilder::new().push(content).build();
-//     msg.reply(ctx, response).await?;
-
-//     Ok(())
-// }
-
 // Non Discord Functions //
 
 // TODO: Change other attributes here to distuinguish devrina
@@ -1284,7 +1231,6 @@ enum Source {
 
 // TODO: Collapse these into generic functions
 async fn get_ellen_species(src: Source) -> Result<String> {
-    // TODO: Refactor
     match src {
         Source::Notion => {
             debug!(name: "get_ellen_species", "Fetching species from Notion");
@@ -1375,7 +1321,6 @@ async fn get_ellen_pronouns(src: Source) -> Result<String> {
                 }
             };
             debug!(name: "get_ellen_pronouns", pronouns=?pronouns, "Pronouns {:#?}", pronouns);
-            // change to % in order to get non string version
             debug!(name: "get_ellen_pronouns", "Pronouns returned");
             Ok(pronouns)
         }
