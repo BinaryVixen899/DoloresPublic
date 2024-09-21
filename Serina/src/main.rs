@@ -11,24 +11,22 @@
 // TODO one day do autocomplete. One day. https://docs.rs/clap_complete/latest/clap_complete/dynamic/shells/enum.CompleteCommand.html
 
 //Standard
-use std::borrow::Borrow;
+
 use std::collections::HashMap;
 use std::fmt::Debug;
 
 use std::fmt::Display;
 use std::future::Future;
-use std::ops::Deref;
-use std::process::exit;
+
 use std::str::FromStr;
 use std::sync::Arc;
-use std::thread::spawn;
+
 use std::time::Duration;
-use std::{default, env, fmt, task};
+use std::{env, fmt};
 
 use clap::builder::ArgPredicate;
 use clokwerk::{AsyncScheduler, Job, TimeUnits};
-use futures_core::FusedFuture;
-use futures_util::future::err;
+
 // use futures_util::sink::Send;
 use indoc::{eprintdoc, printdoc};
 
@@ -46,7 +44,7 @@ use serenity::json::JsonMap;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Activity;
 use serenity::model::gateway::Ready;
-use serenity::model::prelude::{ChannelId, GuildChannel, UserId};
+use serenity::model::prelude::{ChannelId, UserId};
 use serenity::prelude::*;
 use serenity::utils::MessageBuilder;
 use serenity::{async_trait, FutureExt};
@@ -54,15 +52,14 @@ use serenity::{async_trait, FutureExt};
 //AsyncandConcurrency
 use async_stream::try_stream;
 use enum_assoc::Assoc;
-use futures_core::stream::{self, Stream};
+use futures_core::stream::Stream;
 use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
 use strum::EnumString;
-use tokio::runtime::Handle;
-use tokio::select;
+
 use tokio::sync::oneshot::{self, Sender};
 use tokio::task::JoinHandle;
-use tokio::task::JoinSet;
+
 use tokio::time::timeout;
 use tokio::try_join;
 use uncased::UncasedStr;
@@ -84,8 +81,6 @@ use tracing_subscriber::prelude::*;
 // CLI
 use clap::{Args, Parser};
 
-use futures_util::future::{join_all, try_join_all};
-use std::error::Error as RegularError;
 #[derive(Default, Debug, Clone)]
 struct FatalError {
     msg: String,
@@ -117,7 +112,7 @@ struct NonFatalError;
 
 impl Display for NonFatalError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", "test")
+        write!(f, "test")
     }
 }
 
@@ -210,12 +205,12 @@ struct Logs {
 }
 
 //Misc
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Result};
 use chrono::prelude::*;
 use rand::seq::SliceRandom;
 use reqwest::header::ACCEPT;
 use reqwest::Url;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
@@ -503,7 +498,7 @@ impl EventHandler for Handler {
         // Initial Run
         // Create shared futures, restarts counter, unwrap updates_channel_id
         let mut restarts = 0;
-        let mut not_a_wh_restart = true;
+        let _not_a_wh_restart = true;
         let updates_channel_id = specieschannelid.unwrap();
 
         // info!(name:"ready", "made it to res");
@@ -562,7 +557,7 @@ impl EventHandler for Handler {
                     info!(name:"species_handle", "Species encountered an error and died!");
                     match species_handle {
                         Ok(Err(output)) => match output {
-                            TaskErrors::FatalError(e) => {
+                            TaskErrors::FatalError(_e) => {
                                 error!(name:"species_task", "Species loop encountered a fatal error and will not be restarted!");
                                 // Err::<(), FatalError>(e).unwrap();
                                 break;
@@ -578,7 +573,7 @@ impl EventHandler for Handler {
                         Err(_) => break,
                     }
                 }
-                return Err::<(), anyhow::Error>(anyhow!("Managerial thread died!"));
+                Err::<(), anyhow::Error>(anyhow!("Managerial thread died!"))
                 // TODO: Return later and change this to take an error from iniside the loop
             }
         });
@@ -596,7 +591,7 @@ impl EventHandler for Handler {
                     info!(name:"pronouns_handle", "Pronouns encountered an error and died!");
                     match pronouns_handle {
                         Ok(Err(output)) => match output {
-                            TaskErrors::FatalError(e) => {
+                            TaskErrors::FatalError(_e) => {
                                 error!(name:"pronouns_task", "Pronouns loop encountered a fatal error and will not be restarted!");
                                 break;
                             }
@@ -611,12 +606,12 @@ impl EventHandler for Handler {
                         Err(_) => break,
                     }
                 }
-                return Err::<(), anyhow::Error>(anyhow!("Managerial thread died!"));
+                Err::<(), anyhow::Error>(anyhow!("Managerial thread died!"))
                 // TODO: Return later and change this to take an error from iniside the loop
             }
         });
 
-        let result = try_join!(async { pronouns_manager.await? }, async {
+        let _result = try_join!(async { pronouns_manager.await? }, async {
             species_manager.await?
         },);
 
@@ -631,9 +626,9 @@ impl EventHandler for Handler {
 // they're literally calling it on it
 async fn flatten<T: Into<TaskErrors>>(handle: JoinHandle<Result<(), T>>) -> Result<(), TaskErrors> {
     match handle.await {
-        Ok(Ok(result)) => Ok(()),
+        Ok(Ok(_result)) => Ok(()),
         Ok(Err(err)) => Err(err.into()),
-        Err(err) => Err(FatalError::new("Some Join Errors"))?,
+        Err(_err) => Err(FatalError::new("Some Join Errors"))?,
     }
 }
 
@@ -809,7 +804,7 @@ async fn send_species(ctx: &Context, specieschannelid: u64) {
         .expect("Expected ResponseMessageContainer in TypeMap.")
         .clone();
 
-    let mut ellen = ellen_lock.lock().await;
+    let ellen = ellen_lock.lock().await;
 
     let species = ellen.species.as_deref().unwrap();
     // The lock drops at this point, and the original species can presumably be updated
@@ -1228,13 +1223,13 @@ async fn main() -> Result<()> {
             //TODO: if this does not work we can wrap it in async, but it should work because oneshot_rx is a future
             // We await any message from the oneshot channel that things have failed
             match e {
-                Ok(result) => {
+                Ok(_result) => {
                     // one of our loops failed
                     error!(name: "main", "Irrecoverable Notion Failure");
                     error!(name: "main", "An error occured while running Notion!");
                     warn!(name: "main", "Program will now exit!")
                 }
-                Err(e) => {
+                Err(_e) => {
                     // we got hung up on
                     error!(name: "main", "Reciever got hung up on!");
                     warn!(name: "main", "Program will now exit!");
@@ -1761,7 +1756,7 @@ enum Schedule {
 //     }
 // };
 
-fn watch_a_thing(schedule: Option<Schedule>) -> &'static str {
+fn watch_a_thing(_schedule: Option<Schedule>) -> &'static str {
     let now: DateTime<Local> = chrono::offset::Local::now();
     let dayoftheweek = now.date_naive().weekday();
     debug!(name: "watch_a_thing", day=%dayoftheweek, "Day of week: {}", dayoftheweek);
