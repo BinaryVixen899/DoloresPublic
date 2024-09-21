@@ -1,31 +1,28 @@
-// TODO: COMMIT
 //TODO: We need a dev mode off switch
-// TODO: Unpack
-
 // TODO: ADD IN WAIT TIME TO LOOP OTHERWISE YOU WILL CONSTANTLY BOMBARD THE CPU (you're going to need to use a channel for this)
 // TODO: ALSO FIX FAILING 503s
 // TODO: Also more error checking with pronouns, like have it wait a bit
 // TODO: ALso dynamic phrases loadin
-
 // TODO specify a folder for config
 // TODO one day do autocomplete. One day. https://docs.rs/clap_complete/latest/clap_complete/dynamic/shells/enum.CompleteCommand.html
 
+// Constants
+mod constants;
+use constants::CONFIG_PATH;
+use constants::HEADER_PREFIX;
+use constants::PHRASES_CONFIG_PATH;
+
 //Standard
-
-use std::collections::HashMap;
-use std::fmt::Debug;
-
-use std::fmt::Display;
-use std::future::Future;
-
-use std::str::FromStr;
-use std::sync::Arc;
-
-use std::time::Duration;
-use std::{env, fmt};
 
 use clap::builder::ArgPredicate;
 use clokwerk::{AsyncScheduler, Job, TimeUnits};
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::fmt::Display;
+use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
+use std::{env, fmt};
 
 // use futures_util::sink::Send;
 use indoc::{eprintdoc, printdoc};
@@ -34,9 +31,8 @@ use indoc::{eprintdoc, printdoc};
 use notion::ids::BlockId;
 use notion::NotionApi;
 
-use opentelemetry_sdk::logs::Config;
-use opentelemetry_sdk::runtime;
 //Serenity
+use serenity::async_trait;
 use serenity::client::bridge::gateway::ShardManager;
 use serenity::framework::standard::macros::{command, group};
 use serenity::framework::standard::{CommandResult, StandardFramework};
@@ -47,7 +43,6 @@ use serenity::model::gateway::Ready;
 use serenity::model::prelude::{ChannelId, UserId};
 use serenity::prelude::*;
 use serenity::utils::MessageBuilder;
-use serenity::{async_trait, FutureExt};
 
 //AsyncandConcurrency
 use async_stream::try_stream;
@@ -56,30 +51,40 @@ use futures_core::stream::Stream;
 use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
 use strum::EnumString;
-
 use tokio::sync::oneshot::{self, Sender};
 use tokio::task::JoinHandle;
-
 use tokio::time::timeout;
 use tokio::try_join;
 use uncased::UncasedStr;
 
 //Honeycomb
-// TD: read in the honeycomb token as a static or constant variable
+// ToDo: read in the honeycomb token as a static or constant variable
 use opentelemetry::logs::LogError;
 use opentelemetry::KeyValue;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::logs::Config;
+use opentelemetry_sdk::runtime;
 use opentelemetry_sdk::{
     logs::{self as sdklogs},
     Resource,
 };
-
 use tracing::{debug, error, info, trace, trace_span, warn};
 use tracing_subscriber::prelude::*;
 
 // CLI
 use clap::{Args, Parser};
+
+//Misc
+use anyhow::{anyhow, Result};
+use chrono::prelude::*;
+use rand::seq::SliceRandom;
+use reqwest::header::ACCEPT;
+use reqwest::Url;
+use serde_json::json;
+use std::fs::File;
+use std::io::{self, BufRead};
+use std::path::{Path, PathBuf};
 
 #[derive(Default, Debug, Clone)]
 struct FatalError {
@@ -107,7 +112,6 @@ impl std::error::Error for FatalError {
 }
 
 #[derive(Debug, Clone, Copy)]
-
 struct NonFatalError;
 
 impl Display for NonFatalError {
@@ -129,12 +133,6 @@ impl From<FatalError> for TaskErrors {
         Self::FatalError(err)
     }
 }
-
-// impl From<FatalError> for &TaskErrors {
-//     fn from(err: FatalError) -> Self {
-//         Self::FatalError(err)
-//     }
-// }
 
 impl From<NonFatalError> for TaskErrors {
     fn from(err: NonFatalError) -> Self {
@@ -204,34 +202,9 @@ struct Logs {
     stderr: bool,
 }
 
-//Misc
-use anyhow::{anyhow, Result};
-use chrono::prelude::*;
-use rand::seq::SliceRandom;
-use reqwest::header::ACCEPT;
-use reqwest::Url;
-use serde_json::json;
-use std::fs::File;
-use std::io::{self, BufRead};
-use std::path::{Path, PathBuf};
-
-// Constants
-mod constants;
-use constants::CONFIG_PATH;
-use constants::HEADER_PREFIX;
-use constants::PHRASES_CONFIG_PATH;
-
 #[group]
 #[commands(ellenpronouns, ellenspecies /*fronting*/)]
 struct Commands;
-// Refactored Species Loop logic, bot will now quit if an exception is encountered in Ready
-
-/*
-Arc is Atomically Reference Counted.
-Atomic as in safe to access concurrently, reference counted as in will be automatically deleted when not need.
-Mutex means only one thread can access it at once, also provides interior mutability
-RefCell provides interior mutability (meaning you can modify the contents, whereas normally global values are read-only)
- */
 
 // Although no longer relevant, the below notes are kept for sentimental reasons
 
@@ -252,6 +225,13 @@ struct Subject {
 }
 
 // This is where we declare the typemapkeys that actually "transport" the values
+/*
+Arc is Atomically Reference Counted.
+Atomic as in safe to access concurrently, reference counted as in will be automatically deleted when not need.
+Mutex means only one thread can access it at once, also provides interior mutability
+RefCell provides interior mutability (meaning you can modify the contents, whereas normally global values are read-only)
+ */
+
 struct SubjectContainer;
 
 impl TypeMapKey for SubjectContainer {
@@ -282,7 +262,6 @@ struct Handler;
 impl EventHandler for Handler {
     //Actions we take every time a message is created.
     async fn message(&self, ctx: Context, msg: Message) {
-        // Take the messages map out of the RWRG and get the ARC
         let messages = {
             let data_read = ctx.data.read().await;
             data_read
@@ -290,13 +269,13 @@ impl EventHandler for Handler {
                 .expect("Expected ResponseMessageContainer in TypeMap.")
                 .clone()
         };
-        // Really don't like that we have to do this EVERY TIME. I'm not even sure this is feasible tbh. Worried about blocking the thread
+        // Really don't like that we have to do this EVERY TIME.
         let messages = messages.lock().await;
         let span = trace_span!(target: "messagemap", "message");
         let responsemessage = span.in_scope(|| {
 
         trace!(name: "messagesmap", "Messages lock obtained!");
-        /* Dereference messages to get through the MutexGuard, then take a reference since we can't move the content */
+        /* Dereference messages to get through the MutexGuard, then take a reference since we can't* move the content */
         let responsemessage = match &*messages {
             Some(m) => {
                 info!(name: "messagesmap", "Using messages map to respond!");
@@ -318,7 +297,6 @@ impl EventHandler for Handler {
                         Some(String::from("A shocking number of coyotes are killed every year in ACME product related incidents."))
                     }
 
-                    // Return None if not a key phrase
                     _ => None,
                 }
             }
@@ -328,7 +306,6 @@ impl EventHandler for Handler {
 
         if let Some(rm) = responsemessage {
             let response = MessageBuilder::new().push(rm).build();
-            // let responseref = &response.clone();
 
             if let Err(why) = msg.channel_id.say(&ctx.http, &response).await {
                 {
@@ -348,13 +325,12 @@ impl EventHandler for Handler {
         }
     }
 
-    ///Logic that executes when the "Ready" event is received. The most important thing here is the logic for posting my species
-    /// The other most important thing here is that things actually die if they fail, otherwise the bot will be left in a zombie state.
+    ///Logic that executes when the "Ready" event is received. The most important things here are the Eternal Tokio Task Threads
+    /// The other thing we do here is bail out if we cannot start up correctly.
     async fn ready(&self, ctx: Context, mut ready: Ready) -> () {
         info!(name: "ready", username=%ready.user.name, "{} is connected!", &ready.user.name);
 
-        // If Serina's username is not Serina, change it. If that fails, call quit to kill the bot.
-
+        // If Serina's username is not Serina, change it.
         if ready.user.name != "Serina" {
             warn!(name: "ready_username", "Username is not Serina!");
             info!("It appears my name is wrong, I will be right back.");
@@ -377,6 +353,7 @@ impl EventHandler for Handler {
                         )
                         .await;
                     error!(name: "ready_username", error_text=?e, "Could not set username: {:#?}", e);
+                    // If that fails, call quit to kill the bot.
                     quit(&ctx).await;
                     return;
                 }
@@ -384,8 +361,6 @@ impl EventHandler for Handler {
         }
 
         // TODO: Add in Avatar Change when in DevMode
-
-        // Defunct Avatar Logic
 
         // let avatar = serenity::utils::read_image("./serina.jpg");
         // let avatar = match avatar {
@@ -396,7 +371,6 @@ impl EventHandler for Handler {
         //         return ();
         //     }
         // };
-
         // ready
         //     .user
         //     .edit(&ctx, |p| p.avatar(Some(&avatar)))
@@ -430,16 +404,15 @@ impl EventHandler for Handler {
         };
         info!(name: "ready_channel", "Channels retrieved!");
 
+        /*
         // My assumption is that once the await concludes we will continue to execute code
         // The problem with awaiting a future in your current function is that once you've done that you are suspending execution until the future is complete
         // As a result, if watch_westworld never finishes nothing else will be done from this function. period. ever.
         // Except that is no longer true here, because we do watch_westworld in its own task
+         */
 
         info!(name: "ready", "Made it past the initial setup");
-
-        /*  Introducing the stream */
-
-        info!(name: "poll_notion", "poll_notion streams created!");
+        info!(name: "ready_channel", "Species Update Channel Setup Started");
 
         // Check to see if speciesupdateschannel exists,
         //If we cannot create it, then quit
@@ -459,7 +432,7 @@ impl EventHandler for Handler {
             }
         };
 
-        //if it does not exist then create it
+        //if the species update channel does not exist then create it
         if specieschannelid.is_none() {
             let json = json!("speciesupdates");
             let mut map = JsonMap::new();
@@ -482,43 +455,15 @@ impl EventHandler for Handler {
             }
         }
 
-        // THE MONSTER
-
-        //TO TRY:
-        // JOIN SET
-        // STRUCTS
-        // INDEPENDENT MANAGER THREADS
-        // JUST DONT CARE
-
-        // WHAT I HAVE TRIED:
-
-        // CURRENTLY TRYING
-        // Shared  FUTURES BUT SPAWNING NEW ONES
+        // THE ETERNAL TOKIO TASKS
 
         // Initial Run
-        // Create shared futures, restarts counter, unwrap updates_channel_id
+
+        // Prepwork
         let mut restarts = 0;
-        let _not_a_wh_restart = true;
         let updates_channel_id = specieschannelid.unwrap();
 
-        // info!(name:"ready", "made it to res");
-        // let res = tokio::try_join!(
-        //     async(watcher_join_handle),
-        //     flatten(pronouns_join_handle),
-        //     flatten(species_join_handle)
-        // );
-        // match res {
-        //     Ok((first, second, third)) => {
-        //         info!(name:"ready", "made it after res {:?} {:?} {:?}", first, second, third);
-        //     }
-        //     Err(err) => {
-        //         info!(name: "ready", "processing failed; error = {}", err);
-        //     }
-        // };
-        // info!(name:"ready", "made it after res");
-
-        // Spawn two streams that operate asynchronously
-
+        // Scheduled Watcher Activity Changes
         let watcher_ctx = ctx.clone();
         let mut scheduler = AsyncScheduler::new();
         let _activity = if cfg!(feature = "dev") {
@@ -532,8 +477,9 @@ impl EventHandler for Handler {
                 .run(move || watch_westworld(watcher_ctx.clone()));
         };
 
-        info!(name:"ready", "Scheduled activity_change");
+        info!(name:"ready", "Scheduled Watcher Activity Change");
 
+        // Create Watcher Task
         //TODO: Implement a manager for this just because, return an error if watcher_handle fails or if the loop exits and restart until the cows come home
         let _watcher_handle = tokio::spawn({
             async move {
@@ -544,10 +490,13 @@ impl EventHandler for Handler {
             }
         });
 
+        // Create Species Manager and Species Task
+        /* This is also where we create the streams  */
         let species_manager = tokio::spawn({
             let ctx = ctx.clone();
             async move {
                 loop {
+                    // The Task can fail up to five times before we bail out
                     if restarts == 5 {
                         eprintln!("Max restarts reached!");
                         break;
@@ -874,6 +823,7 @@ async fn send_species(ctx: &Context, specieschannelid: u64) {
 
 async fn pronouns_worker(ctx: Context, updates_channel_id: u64) -> Result<(), TaskErrors> {
     let pronouns_stream = poll_notion(Characteristics::Pronouns, None);
+    info!(name: "poll_notion", "poll_notion stream created!");
     info!("Starting pronouns loop");
     if let Err(e) = pronounsloop(&ctx, updates_channel_id, pronouns_stream).await {
         error!(name:"ready", error_text=?e, "Pronouns loop failed: {:#?}", e);
@@ -885,6 +835,7 @@ async fn pronouns_worker(ctx: Context, updates_channel_id: u64) -> Result<(), Ta
 
 async fn species_worker(ctx: Context, updates_channel_id: u64) -> Result<(), TaskErrors> {
     let species_stream = poll_notion(Characteristics::Species, None);
+    info!(name: "poll_notion", "poll_notion stream created!");
     info!(name:"ready", "Starting species loop");
     if let Err(e) = speciesloop(&ctx, updates_channel_id, species_stream).await {
         error!(name:"ready", error_text=?e, "Species loop failed: {:#?}", e);
