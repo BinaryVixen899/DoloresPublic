@@ -1326,6 +1326,7 @@ async fn get_ellen_pronouns(src: Source) -> Result<String> {
         }
 
         Source::ApiKitsuneGay => {
+            // TODO: Actually implement this
             // let client = reqwest::Client::new();
             // let species = client
             //     .get("https://api.kitsune.gay/Species")
@@ -1336,6 +1337,7 @@ async fn get_ellen_pronouns(src: Source) -> Result<String> {
             //     .await?;
             // println!("I have identified the {}", species);
             error!(name: "get_ellen_pronouns", "ApiKitsuneGay was used as a source for pronouns! This function is not yet implemented!");
+            // We fake it out here
             let pronouns = "She/Her".to_string();
             Ok(pronouns)
         }
@@ -1347,20 +1349,19 @@ enum Characteristics {
     Species,
     Pronouns,
 }
-/// Poll notion every 30 seconds grabbing a characteristic
+/// Poll notion every Duration, grabbing a characteristic
 ///
 fn poll_notion(
     characteristic: Characteristics,
     mut sleep_time: Option<Duration>,
 ) -> impl Stream<Item = Result<String>> {
-    //TODO: Consider reducing this... Want to get things as fast as possible
     if sleep_time.is_none() {
         sleep_time = Some(Duration::from_secs(30));
     }
     let sleep_time = sleep_time.unwrap();
 
     try_stream! {
-        // TODO: Why in the hell does this not actually return errors?!?!?
+        // TODO: Refactor this so if both are supplied it hands back both and the callee needs to figure out how to handle that
         loop {
             info!(name: "poll_notion", "Polling notion for");
             // The ? hands the error off to the caller
@@ -1384,7 +1385,6 @@ fn poll_notion(
 fn get_phrases(
     phrases_config: &PathBuf,
 ) -> Option<Result<HashMap<std::string::String, std::string::String>>> {
-    // TODO: give different messages depending on whether phrases_config is default
     if phrases_config
         .to_str()
         .expect("Able to convert phrases_config from a path to a string")
@@ -1394,18 +1394,16 @@ fn get_phrases(
     } else {
         println!("Using custom phrases config path {:?}", phrases_config)
     }
-    // TODO: Need an entire thing from before where if the phrases config path does not exist, we return a NONE
     if phrases_config.is_file() {
         info!(name: "get_phrases", "Reading lines in");
         if let Ok(phrases) = read_lines(phrases_config) {
             info!(name: "get_phrases", "Read lines in!");
             // Originally I used filter map but it turns out you can get an unlimited string of errors from filter_map if it's acting on Lines
+            // this consumes the iterator, as rust-by-example notes
+            /* also welcome back to Rust, where you are forced to handle your errors
+            This is why it is so hard to just unwrap the result, because you're not handling your errors if you do that */
             let phrases: Vec<String> = phrases.map_while(Result::ok).collect();
             debug!(name: "get_phrases", phrases=?phrases, "phrases {:#?}", phrases);
-            // this consumes the iterator, as rust-by-example notes
-            // although this should also be obvious imo
-            // also welcome back to Rust, where you are forced to handle your errors
-            // This is why it is so hard to just unwrap the result, because you're not handling your errors if you do that
 
             // If there are any messages, create a hash map from them
             if !phrases.is_empty() {
@@ -1416,9 +1414,7 @@ fn get_phrases(
                 // Something about sneps
                 let mut messagesmap = HashMap::new();
                 for (i, m) in phrases.iter().enumerate() {
-                    // No possible way for this to be a non even number, meaning we should be fine
-                    // Although we will have to skip ahead if i is an odd number
-                    // And manually handle the break at the end
+                    // No possible way for this to be a non even number so we do not handle that
                     if i % 2 == 0 {
                         messagesmap.insert(m.clone().to_lowercase(), phrases[i + 1].clone());
                     } else if i == phrases.len() {
@@ -1444,6 +1440,8 @@ fn get_phrases(
     }
 }
 
+/*read_lines is not some library function we're overriding
+read_lines IS our function except through the power of generics, we are able to do all this*/
 fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
 where
     P: AsRef<Path>,
@@ -1452,9 +1450,7 @@ where
     Ok(io::BufReader::new(file).lines())
 }
 
-//read_lines is not some library function we're overriding
-//read_lines IS our function except through the power of generics, we are able to do all this
-
+// Declare this here instead of at the first so that we can easily refer to the values
 #[derive(Assoc)]
 #[func(pub fn show(&self, param: &str) -> String)]
 #[func(pub fn with_default(&self) ->  &'static str)]
@@ -1478,25 +1474,8 @@ enum Schedule {
     #[assoc(with_default = "the stars pass by...")]
     Nothing,
 }
-// impl fmt::Display for Schedule {
-//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-//         write!(f, "{:?}", self)
-//         // or, alternatively:
-//         // fmt::Debug::fmt(self, f)
-//     }
-// }
 
-// let watching_schedule = {
-//     Schedule::TV {
-//         monday: "A particularly interesting anomaly".to_string(),
-//         tuesday: "The digital data flow that makes up my existence".to_string(),
-//         wednesday: "A snow leopard, of course.".to_string(),
-//         thursday: "London by night, circa 1963".to_string(),
-//         friday: "Everything and nothing.".to_string(),
-//         default: Some("the stars pass by...".to_string()),
-//     }
-// };
-
+// TODO: refactor watch_a_thing to take an option of something that implements Schedule, this will potentially allow us to work around not being able to provide A Thing That Has Shows For Every Day of the Week
 fn watch_a_thing(_schedule: Option<Schedule>) -> &'static str {
     let now: DateTime<Local> = chrono::offset::Local::now();
     let dayoftheweek = now.date_naive().weekday();
@@ -1582,8 +1561,8 @@ fn try_init_otel_logs(
         .collect();
 
         // Have an example of filter_map making things LESS legible
-        // let naively_some_function = |name: String, value: String| {(name.strip_prefix(HEADER_PREFIX).unwrap().replace("_", "-").to_ascii_lowercase(), value.to_string())};
-        // let headers: HashMap<_, _> = dotenv::vars().filter_map(|(name, value)|  name.starts_with(HEADER_PREFIX).then_some(naively_some_function(name, value))).collect();
+        /*  let naively_some_function = |name: String, value: String| {(name.strip_prefix(HEADER_PREFIX).unwrap().replace("_", "-").to_ascii_lowercase(), value.to_string())};
+        let headers: HashMap<_, _> = dotenv::vars().filter_map(|(name, value)|  name.starts_with(HEADER_PREFIX).then_some(naively_some_function(name, value))).collect(); */
 
         let pipeline = opentelemetry_otlp::new_pipeline()
             .logging()
@@ -1614,9 +1593,9 @@ mod tests {
 
     use super::*;
     async fn can_poll_notion() {
+        // TODO: Implement this so that it tests whether or not Notion's API still works the way we assume it does.
         // Tests whether we can poll notion for valid input and if there is at least 30 seconds between
-        // make sleeptime conigurable
-        // TODO: Come back to this and actually make it do what we want
+        // make sleeptime configurable
         // let past = Instant::now();
         // let teststream = poll_notion();
         // pin_mut!(teststream);
@@ -1631,57 +1610,45 @@ mod tests {
     }
 
     async fn gets_ellen_species() {
-        // TODO: After refactor test for failure
+        // TODO: Implement tests for failure handling?
         let species = get_ellen_species(Source::Notion);
         assert!(species.await.is_ok());
 
         let species = get_ellen_species(Source::ApiKitsuneGay);
         assert!(species.await.is_ok());
     }
+
+    // TODO: Redo this test after watch_a_thing has been refactored
+    // async fn watches() {
+    //     let tv = match dayoftheweek.number_from_monday() {
+    //         1 => Schedule::Monday.show("Static Shock"),
+    //         2 => Schedule::Tuesday.show("Pokémon"),
+    //         3 => Schedule::Wednesday.show("MLP Friendship is Magic"),
+    //         4 => Schedule::Thursday.show("The Borrowers"),
+    //         5 => Schedule::Friday.show("Sherlock Holmes in the 22nd Century"),
+    //         _ => Schedule::Nothing.show("Candle Cove"),
+    //     };
+    //     let show = watch_a_thing(tvschedule);
+    //     match dayoftheweek {
+    //         Weekday::Mon => {
+    //             assert_eq!(show, tv)
+    //         }
+    //         Weekday::Tue => {
+    //             assert_eq!(show, tv)
+    //         }
+    //         Weekday::Wed => {
+    //             assert_eq!(show, tv)
+    //         }
+    //         Weekday::Thu => {
+    //             assert_eq!(show, tv)
+    //         }
+    //         Weekday::Fri => {
+    //             assert_eq!(show, tv)
+    //         }
+    //         _ => {
+    //             assert_eq!(show, tv)
+    //         }
+    //     }
+
+    //TODO: Basic test just needs to check that it changes depending on the day
 }
-
-//     async fn watches() {
-//         let monday_tv = "Static Shock".to_string();
-//         let tuesday_tv = "Pokémon".to_string();
-//         let wednesday_tv = "MLP Friendship is Magic".to_string();
-//         let thursday_tv = "The Borrowers".to_string();
-//         let friday_tv = "Sherlock Holmes in the 22nd Century".to_string();
-//         let spooky_tv = "Candle Cove".to_string();
-
-//         // let tvschedule = {
-//         //     Schedule::TV {
-//         //         monday: monday_tv.clone(),
-//         //         tuesday: tuesday_tv.clone(),
-//         //         wednesday: wednesday_tv.clone(),
-//         //         thursday: thursday_tv.clone(),
-//         //         friday: friday_tv.clone(),
-//         //         default: Some(spooky_tv.clone()),
-//         //     }
-//         // };
-//         let now: DateTime<Local> = chrono::offset::Local::now();
-//         let dayoftheweek = now.date_naive().weekday();
-//         let show = watch_a_thing(tvschedule);
-//         match dayoftheweek {
-//             Weekday::Mon => {
-//                 assert_eq!(show, monday_tv)
-//             }
-//             Weekday::Tue => {
-//                 assert_eq!(show, tuesday_tv)
-//             }
-//             Weekday::Wed => {
-//                 assert_eq!(show, wednesday_tv)
-//             }
-//             Weekday::Thu => {
-//                 assert_eq!(show, thursday_tv)
-//             }
-//             Weekday::Fri => {
-//                 assert_eq!(show, friday_tv)
-//             }
-//             _ => {
-//                 assert_eq!(show, spooky_tv)
-//             }
-//         }
-
-//         //TODO: Basic test just needs to check that it changes depending on the day
-//     }
-// }
