@@ -1,4 +1,6 @@
 // TODO: COMMIT
+//TODO: We need a dev mode off switch
+// TODO: Unpack
 
 // TODO: ADD IN WAIT TIME TO LOOP OTHERWISE YOU WILL CONSTANTLY BOMBARD THE CPU (you're going to need to use a channel for this)
 // TODO: ALSO FIX FAILING 503s
@@ -8,8 +10,8 @@
 // TODO specify a folder for config
 // TODO one day do autocomplete. One day. https://docs.rs/clap_complete/latest/clap_complete/dynamic/shells/enum.CompleteCommand.html
 
-use std::borrow::Borrow;
 //Standard
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt::Debug;
 
@@ -24,6 +26,7 @@ use std::time::Duration;
 use std::{default, env, fmt, task};
 
 use clap::builder::ArgPredicate;
+use clokwerk::{AsyncScheduler, Job, TimeUnits};
 use futures_core::FusedFuture;
 use futures_util::future::err;
 // use futures_util::sink::Send;
@@ -50,6 +53,7 @@ use serenity::{async_trait, FutureExt};
 
 //AsyncandConcurrency
 use async_stream::try_stream;
+use enum_assoc::Assoc;
 use futures_core::stream::{self, Stream};
 use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
@@ -352,7 +356,6 @@ impl EventHandler for Handler {
     ///Logic that executes when the "Ready" event is received. The most important thing here is the logic for posting my species
     /// The other most important thing here is that things actually die if they fail, otherwise the bot will be left in a zombie state.
     async fn ready(&self, ctx: Context, mut ready: Ready) -> () {
-        // TODO: Unpack
         info!(name: "ready", username=%ready.user.name, "{} is connected!", &ready.user.name);
 
         // If Serina's username is not Serina, change it. If that fails, call quit to kill the bot.
@@ -521,23 +524,27 @@ impl EventHandler for Handler {
 
         // Spawn two streams that operate asynchronously
 
-        info!(name:"ready", "made it inside");
-        let watcher_manager = tokio::spawn({
-            let ctx = ctx.clone();
+        let watcher_ctx = ctx.clone();
+        let mut scheduler = AsyncScheduler::new();
+        let _activity = if cfg!(feature = "dev") {
+            scheduler
+                .every(1.minutes())
+                .run(move || watch_westworld(watcher_ctx.clone()));
+        } else {
+            scheduler
+                .every(1.day())
+                .at("12:00 am")
+                .run(move || watch_westworld(watcher_ctx.clone()));
+        };
+
+        info!(name:"ready", "Scheduled activity_change");
+
+        //TODO: Implement a manager for this just because, return an error if watcher_handle fails or if the loop exits and restart until the cows come home
+        let _watcher_handle = tokio::spawn({
             async move {
                 loop {
-                    let watcher_handle = tokio::spawn(watch_westworld(ctx.clone(), None)).await;
-                    info!(name:"watcher_task", "Watcher encountered an error and was respawned!!");
-                    match watcher_handle {
-                        Ok(Err(output)) => match output {
-                            TaskErrors::FatalError(_) => break,
-                            TaskErrors::NonFatalError(_) => continue,
-                        },
-                        Ok(Ok(_)) => break,
-
-                        Err(err) if err.is_panic() => continue,
-                        Err(_) => break,
-                    }
+                    let _ = scheduler.run_pending().await;
+                    tokio::time::sleep(Duration::from_secs(10)).await;
                 }
             }
         });
@@ -1462,53 +1469,21 @@ async fn ellenpronouns(ctx: &Context, msg: &Message) -> CommandResult {
 
 // Non Discord Functions //
 
-async fn watch_westworld(ctx: Context, fetch_duration: Option<Duration>) -> Result<(), TaskErrors> {
-    //TODO: We need a dev mode off switch
-    // TODO: Change other attributes here to distuinguish devlores
-
-    let watching_schedule = {
-        Schedule::TV {
-            monday: "A particularly interesting anomaly".to_string(),
-            tuesday: "The digital data flow that makes up my existence".to_string(),
-            wednesday: "A snow leopard, of course.".to_string(),
-            thursday: "London by night, circa 1963".to_string(),
-            friday: "Everything and nothing.".to_string(),
-            default: Some("the stars pass by...".to_string()),
-        }
-    };
-
-    loop {
-        let thing = watch_a_thing(watching_schedule.clone());
-        if cfg!(feature = "dev") {
-            ctx.set_activity(Activity::watching(
-                "🎶🎶🎶Snepgirl on a leash, you can feed her treats!🎶🎶🎶",
-            ))
-            .await;
-            info!(name: "watch_westworld", "Dev Mode Watching activity set!");
-        } else {
-            ctx.set_activity(Activity::watching(
-                "The digital data flow that makes up our lives 💾💽💻",
-            ))
-            .await;
-            info!(name: "watch_westworld", "Watching activity set!");
-        }
-        match fetch_duration {
-            Some(d) => {
-                debug!(name: "watch_westworld", "Watch Westworld sleeping for {:#?} seconds", d);
-                tokio::time::sleep(Duration::from_secs(d.as_secs())).await;
-            }
-            None => {
-                if cfg!(feature = "dev") {
-                    debug!(name: "watch_westworld", "Watch Westworld sleeping for 60 seconds");
-                    tokio::time::sleep(Duration::from_secs(60)).await;
-                } else {
-                    debug!(name: "watch_westworld", "Watch Westworld sleeping for 84600 seconds");
-                    tokio::time::sleep(Duration::from_secs(86400)).await;
-                }
-            }
-        }
+// TODO: Change other attributes here to distuinguish devrina
+async fn watch_westworld(ctx: Context) {
+    let activity = watch_a_thing(None);
+    if cfg!(feature = "dev") {
+        info!(name:"ready", "Setting ");
+        ctx.set_activity(Activity::watching(
+            // "🎶🎶🎶Snepgirl on a leash, you can feed her treats!🎶🎶🎶",
+            "🍻🐈🎶Cheers~🎶🐈🍻",
+        ))
+        .await;
+        info!(name: "watch_westworld", "Dev Mode Watching activity would have been set to {:#?}!", activity);
+    } else {
+        ctx.set_activity(Activity::watching(activity)).await;
+        info!(name: "watch_westworld", "Watching activity set to {:#?}!", activity);
     }
-    return Err(FatalError::default())?;
 }
 
 enum Source {
@@ -1743,56 +1718,65 @@ where
 
 //read_lines is not some library function we're overriding
 //read_lines IS our function except through the power of generics, we are able to do all this
-#[derive(Debug, Clone)]
-enum Schedule {
-    TV {
-        monday: String,
-        tuesday: String,
-        wednesday: String,
-        thursday: String,
-        friday: String,
-        default: Option<String>,
-    },
-    Nothing {
-        message: String,
-    },
-}
 
-fn watch_a_thing(schedule: Schedule) -> String {
-    impl fmt::Display for Schedule {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            write!(f, "{:?}", self)
-            // or, alternatively:
-            // fmt::Debug::fmt(self, f)
-        }
-    }
+#[derive(Assoc)]
+#[func(pub fn show(&self, param: &str) -> String)]
+#[func(pub fn with_default(&self) ->  &'static str)]
+enum Schedule {
+    #[assoc(show = String::new() + param)]
+    #[assoc(with_default = "A particularly interesting anomaly")]
+    Monday,
+    #[assoc(show = String::new() + param)]
+    #[assoc(with_default = "The digital data flow that makes up my existence")]
+    Tuesday,
+    #[assoc(show = String::new() + param)]
+    #[assoc(with_default = "A snow leopard, of course.")]
+    Wednesday,
+    #[assoc(show = String::new() + param)]
+    #[assoc(with_default = "London by night, circa 1963")]
+    Thursday,
+    #[assoc(show = String::new() + param)]
+    #[assoc(with_default = "Everything and nothing.")]
+    Friday,
+    #[assoc(show = String::new() + param)]
+    #[assoc(with_default = "the stars pass by...")]
+    Nothing,
+}
+// impl fmt::Display for Schedule {
+//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+//         write!(f, "{:?}", self)
+//         // or, alternatively:
+//         // fmt::Debug::fmt(self, f)
+//     }
+// }
+
+// let watching_schedule = {
+//     Schedule::TV {
+//         monday: "A particularly interesting anomaly".to_string(),
+//         tuesday: "The digital data flow that makes up my existence".to_string(),
+//         wednesday: "A snow leopard, of course.".to_string(),
+//         thursday: "London by night, circa 1963".to_string(),
+//         friday: "Everything and nothing.".to_string(),
+//         default: Some("the stars pass by...".to_string()),
+//     }
+// };
+
+fn watch_a_thing(schedule: Option<Schedule>) -> &'static str {
     let now: DateTime<Local> = chrono::offset::Local::now();
     let dayoftheweek = now.date_naive().weekday();
     debug!(name: "watch_a_thing", day=%dayoftheweek, "Day of week: {}", dayoftheweek);
+    // let string_default = default.unwrap_or(String::from("Westworld"));
 
-    match schedule {
-        Schedule::TV {
-            monday,
-            tuesday,
-            wednesday,
-            thursday,
-            friday,
-            default,
-        } => {
-            let string_default = default.unwrap_or(String::from("Westworld"));
-            let show = match dayoftheweek.number_from_monday() {
-                1 => monday,
-                2 => tuesday,
-                3 => wednesday,
-                4 => thursday,
-                5 => friday,
-                _ => string_default,
-            };
-            debug!(name: "watch_a_thing", show=?show, "Today's show is {:#?}", show);
-            show
-        }
-        Schedule::Nothing { message } => message,
-    }
+    let show = match dayoftheweek.number_from_monday() {
+        1 => Schedule::Monday.with_default(),
+        2 => Schedule::Tuesday.with_default(),
+        3 => Schedule::Wednesday.with_default(),
+        4 => Schedule::Thursday.with_default(),
+        5 => Schedule::Friday.with_default(),
+        _ => Schedule::Nothing.with_default(),
+    };
+    debug!(name: "watch_a_thing", show=?show, "Today's show is {:#?}", show);
+    show
 }
 
 /// Tries to initiate open telemetry logging
@@ -1918,49 +1902,50 @@ mod tests {
         let species = get_ellen_species(Source::ApiKitsuneGay);
         assert!(species.await.is_ok());
     }
-
-    async fn watches() {
-        let monday_tv = "Static Shock".to_string();
-        let tuesday_tv = "Pokémon".to_string();
-        let wednesday_tv = "MLP Friendship is Magic".to_string();
-        let thursday_tv = "The Borrowers".to_string();
-        let friday_tv = "Sherlock Holmes in the 22nd Century".to_string();
-        let spooky_tv = "Candle Cove".to_string();
-
-        let tvschedule = {
-            Schedule::TV {
-                monday: monday_tv.clone(),
-                tuesday: tuesday_tv.clone(),
-                wednesday: wednesday_tv.clone(),
-                thursday: thursday_tv.clone(),
-                friday: friday_tv.clone(),
-                default: Some(spooky_tv.clone()),
-            }
-        };
-        let now: DateTime<Local> = chrono::offset::Local::now();
-        let dayoftheweek = now.date_naive().weekday();
-        let show = watch_a_thing(tvschedule);
-        match dayoftheweek {
-            Weekday::Mon => {
-                assert_eq!(show, monday_tv)
-            }
-            Weekday::Tue => {
-                assert_eq!(show, tuesday_tv)
-            }
-            Weekday::Wed => {
-                assert_eq!(show, wednesday_tv)
-            }
-            Weekday::Thu => {
-                assert_eq!(show, thursday_tv)
-            }
-            Weekday::Fri => {
-                assert_eq!(show, friday_tv)
-            }
-            _ => {
-                assert_eq!(show, spooky_tv)
-            }
-        }
-
-        //TODO: Basic test just needs to check that it changes depending on the day
-    }
 }
+
+//     async fn watches() {
+//         let monday_tv = "Static Shock".to_string();
+//         let tuesday_tv = "Pokémon".to_string();
+//         let wednesday_tv = "MLP Friendship is Magic".to_string();
+//         let thursday_tv = "The Borrowers".to_string();
+//         let friday_tv = "Sherlock Holmes in the 22nd Century".to_string();
+//         let spooky_tv = "Candle Cove".to_string();
+
+//         // let tvschedule = {
+//         //     Schedule::TV {
+//         //         monday: monday_tv.clone(),
+//         //         tuesday: tuesday_tv.clone(),
+//         //         wednesday: wednesday_tv.clone(),
+//         //         thursday: thursday_tv.clone(),
+//         //         friday: friday_tv.clone(),
+//         //         default: Some(spooky_tv.clone()),
+//         //     }
+//         // };
+//         let now: DateTime<Local> = chrono::offset::Local::now();
+//         let dayoftheweek = now.date_naive().weekday();
+//         let show = watch_a_thing(tvschedule);
+//         match dayoftheweek {
+//             Weekday::Mon => {
+//                 assert_eq!(show, monday_tv)
+//             }
+//             Weekday::Tue => {
+//                 assert_eq!(show, tuesday_tv)
+//             }
+//             Weekday::Wed => {
+//                 assert_eq!(show, wednesday_tv)
+//             }
+//             Weekday::Thu => {
+//                 assert_eq!(show, thursday_tv)
+//             }
+//             Weekday::Fri => {
+//                 assert_eq!(show, friday_tv)
+//             }
+//             _ => {
+//                 assert_eq!(show, spooky_tv)
+//             }
+//         }
+
+//         //TODO: Basic test just needs to check that it changes depending on the day
+//     }
+// }
