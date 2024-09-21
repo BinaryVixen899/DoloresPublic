@@ -508,7 +508,6 @@ impl EventHandler for Handler {
                         Ok(Err(output)) => match output {
                             TaskErrors::FatalError(_e) => {
                                 error!(name:"species_task", "Species loop encountered a fatal error and will not be restarted!");
-                                // Err::<(), FatalError>(e).unwrap();
                                 break;
                             }
                             TaskErrors::NonFatalError(_) => {
@@ -517,13 +516,12 @@ impl EventHandler for Handler {
                             }
                         },
                         Ok(Ok(_)) => break,
-
                         Err(err) if err.is_panic() => continue,
                         Err(_) => break,
                     }
                 }
-                Err::<(), anyhow::Error>(anyhow!("Managerial thread died!"))
                 // TODO: Return later and change this to take an error from iniside the loop
+                Err::<(), anyhow::Error>(anyhow!("Managerial thread died!"))
             }
         });
 
@@ -531,6 +529,7 @@ impl EventHandler for Handler {
             let ctx = ctx.clone();
             async move {
                 loop {
+                    // The Task can fail up to five times before we bail out
                     if restarts == 5 {
                         eprintln!("Max restarts reached!");
                         break;
@@ -550,13 +549,12 @@ impl EventHandler for Handler {
                             }
                         },
                         Ok(Ok(_)) => break,
-
                         Err(err) if err.is_panic() => continue,
                         Err(_) => break,
                     }
                 }
-                Err::<(), anyhow::Error>(anyhow!("Managerial thread died!"))
                 // TODO: Return later and change this to take an error from iniside the loop
+                Err::<(), anyhow::Error>(anyhow!("Managerial thread died!"))
             }
         });
 
@@ -565,81 +563,20 @@ impl EventHandler for Handler {
         },);
 
         println!("Irrecoverable error!");
-
         quit(&ctx.clone()).await;
     }
 }
 
-// Trying to convert a joinhandle of any error (or maybe anyhow error?) to a result of something implementing an error
-// https://stackoverflow.com/questions/71751269/how-to-convert-anyhow-error-to-std-error
-// they're literally calling it on it
-async fn flatten<T: Into<TaskErrors>>(handle: JoinHandle<Result<(), T>>) -> Result<(), TaskErrors> {
-    match handle.await {
-        Ok(Ok(_result)) => Ok(()),
-        Ok(Err(err)) => Err(err.into()),
-        Err(_err) => Err(FatalError::new("Some Join Errors"))?,
-    }
-}
-
-// async fn flatten_ref<T: Into<TaskErrors>>(
-//     handle: JoinHandle<Result<(), &T>>,
-// ) -> Result<(), TaskErrors> {
-//     match handle.await {
-//         Ok(Ok(result)) => Ok(()),
-//         Ok(Err(err)) => Err(err.into()),
-//         Err(err) => Err(FatalError::new("Some Join Errors"))?,
-//     }
-// }
-
-// fn start_shared_worker<F>(worker: WorkerType, context: &Context, handle: F) -> JoinHandle<()>
-// where
-//     F: Future + Send + 'static,
-//     F::Output: Send + 'static,
-// {
-//     // match worker {
-//     //     WorkerType::watcher => {
-//     let ctx = context.clone();
-//     // let handle = async move {
-//     //     watch_westworld(&ctx, None).await;
-//     // };
-//     let worker = tokio::spawn(handle);
-//     return worker;
-//     // } // WorkerType::pronounsloop => {
-//     //     let pronouns = async move {
-//     //         info!("Starting pronouns loop");
-//     //         pronounsloop(
-//     //             &context,
-//     //             specieschannelid.expect("A valid updates channel ID"),
-//     //             pronouns_stream,
-//     //         )
-//     //         .await;
-//     //     };
-
-//     //     return pronouns;
-//     // }
-//     // WorkerType::speciesloop => {
-//     //     return worker;
-//     // }
-// }
-// // }
-
-enum WorkerType {
-    watcher,
-    speciesloop,
-    pronounsloop,
-}
-
 async fn quit(ctx: &Context) {
-    let mut data_read = ctx.data.write().await;
     //nobody can update the species while i'm reading it
-    // hypothetically, this could deadlock, maybe?
+    // hypothetically, I am worried this could deadlock, maybe?
+    let mut data_read = ctx.data.write().await;
     let oneshot_tx_arc = {
         data_read
             .remove::<OneShotContainer>()
             .expect("Expected SendContainer in TypeMap.")
     };
 
-    // closed.await
     let oneshot_tx = Arc::into_inner(oneshot_tx_arc);
     if oneshot_tx.is_none() {
         if let Some(manager) = data_read.get::<ShardManagerContainer>() {
@@ -650,13 +587,9 @@ async fn quit(ctx: &Context) {
         // TODO: Check if this immediatelly returns us from bot. If it doesn't, we should use a sender to indicate whether this was because of an error or not
     } else {
         let string: String = String::from("Quit was called!");
-        let _ = oneshot_tx.unwrap().send(string.clone());
         // Specifically quit by sending on tx
+        let _ = oneshot_tx.unwrap().send(string.clone());
     }
-
-    // TODO: Shut down this
-
-    // Using `let _ =` to ignore send errors.
 }
 
 async fn speciesloop<S: Stream<Item = Result<String>>>(
@@ -665,10 +598,7 @@ async fn speciesloop<S: Stream<Item = Result<String>>>(
     species_stream: S,
 ) -> Result<()> {
     info!(name: "speciesstream", "Species stream started!");
-    // info!(name:"send_species", arc_count=%Arc::strong_count(&species), "Starting species loop!");
     info!(name:"speciesstream",  "Starting species loop!");
-    // TODO: Need to unpack the Ellen species
-    // TODO: Fallback to speciesstream
 
     pin_mut!(species_stream);
     // While the stream is still giving us values, wait until we have the next value
@@ -685,7 +615,7 @@ async fn speciesloop<S: Stream<Item = Result<String>>>(
 
         // Use a default if species is an error
         let species = species.unwrap_or(String::from("Kitsune"));
-        // pass back errors that the stream generatedb n00
+        // pass back errors that the stream generated
         info!(name: "species_loop", species=?species, lastpronouns=?ellen.species, "Checking Species!");
         if ellen.species.as_deref() != Some(species.as_str()) {
             if ellen.species.is_none() {
@@ -698,51 +628,6 @@ async fn speciesloop<S: Stream<Item = Result<String>>>(
         }
     }
     Err(anyhow!("Stream Ended"))
-
-    //     match species {
-    //         Ok(transformation) => {
-    //             // If this is the first time we are doing this species will be None
-    //             // In this case, set the species to whatever we get
-    //             // We then have to continue the loop, probably because Rust doesn't know that NOTHING will be modifying
-    //             // the value of species inbetween is_none and is_some
-    //             if ellen.species.is_none() {
-    //                 warn!(
-    //                     name: "speciesstream",
-    //                     species=?transformation,
-    //                     "Setting initial species to {:#?}, This should only happen once!",
-    //                     &transformation
-    //                 );
-    //                 // TODO: We should look for the last species and if it's the same not send an update
-    //                 ellen.species = Some(transformation);
-    //                 continue;
-    //             };
-
-    //             if ellen.species.is_some() {
-    //                 /* If the new item from the stream is the same as the current lastspecies,
-    //                   Then we know nothing has changed and we should continue the loop
-    //                 */
-    //                 if ellen.species.as_ref().expect("Species has a value") == &transformation {
-    //                     trace!(name: "speciesstream", species=?transformation, "Species remained the same.");
-    //                     continue;
-    //                 } else {
-    //                     // However, if it is different, then update current species
-    //                     // trace!("Species updated! {}", &transformation);
-    //                     ellen.species = Some(transformation);
-    //                 }
-    //             }
-
-    //             send_species(ctx, specieschannelid);
-    //         }
-    //         Err(e) => {
-    //             //TODO: We can go ahead and restart here if we hit a certain number of errors
-    //             // TODO: This doesn't make sense we will never hit error
-    //             error!(name: "speciesstream", "Could not set species");
-    //             error!(name: "speciesstream", error_text=?e, "Species loop failure: {:#?}", &e);
-    //             return Err(anyhow!(e));
-    //         }
-    //     };
-    // }
-    // Ok(())
 }
 
 async fn send_species(ctx: &Context, specieschannelid: u64) {
@@ -845,7 +730,6 @@ async fn species_worker(ctx: Context, updates_channel_id: u64) -> Result<(), Tas
     Ok(())
 }
 
-// It would be WAY more readable to just go ahead and do both species and pronouns in one function but I want to get this up as soon as possible
 async fn pronounsloop<S: Stream<Item = Result<String>>>(
     ctx: &Context,
     updates_channel_id: u64,
@@ -861,7 +745,6 @@ async fn pronounsloop<S: Stream<Item = Result<String>>>(
             .clone();
 
         let mut ellen = ellen_lock.lock().await;
-        // This is where I would put witty comments, IF I HAD ANY
         if let Ok(pronouns) = pronouns {
             info!(name: "pronouns_loop", pronouns=?pronouns, lastpronouns=?ellen.pronouns, "Checking Pronouns!");
             if ellen.pronouns.as_deref() != Some(pronouns.as_str()) {
@@ -889,13 +772,14 @@ async fn pronouns_send(ctx: &Context, updates_channel_id: u64) {
     let ellen = ellen_arc.lock().await;
     let epronouns = ellen.pronouns.as_deref().unwrap();
 
-    let pronouns: Vec<&str> = epronouns.split('/').collect();
     // oh no, this will create a new vec every time...
+    let pronouns: Vec<&str> = epronouns.split('/').collect();
     assert_ne!(
         pronouns.last(),
         None,
         "An invalid value was entered for pronouns"
     );
+
     // get a union of these
     assert_eq!(
         pronouns.len(),
@@ -908,6 +792,7 @@ async fn pronouns_send(ctx: &Context, updates_channel_id: u64) {
         .choose(&mut rand::thread_rng())
         .expect("Able to take a reference to a pronoun");
 
+    // This is where I would put witty comments, IF I HAD ANY
     let name_and_comment: (Option<&str>, Option<&str>) = match pronoun.to_lowercase().as_str() {
         "she" | "her" => (
             Some("Ellen"),
@@ -948,47 +833,9 @@ async fn pronouns_send(ctx: &Context, updates_channel_id: u64) {
         }
     }
 }
-// TODO: Pronouns map
-// let map = json!({
-//     "content": content,
-//     "tts": false,
-//     });
-
-//    Err(e) => {
-//        println!("Could not set pronouns");
-//        return Err(anyhow!(e));
-
-//    }
-
-// Unused logic for automatically handling members joining
-// async fn reaction_add(&self, _ctx: Context, _add_reaction: Reaction) {
-//     // When someone new joins, if an admin adds a check reaction bring them in and give them roles
-//     // If an admin does an X reaction, kick them out
-//     todo!()
-// }
-// async fn guild_member_addition(&self, ctx: Context, new_member: Member) {
-//     let content = MessageBuilder::new()
-//         .push("Welcome to Westworld!")
-//         .mention(&new_member.mention())
-//         .build();
-//     let message = ChannelId(2341324123123)
-//         .send_message(&ctx, |m| m.content(content))
-//         .await;
-//     if let Err(why) = message {
-//         error!("Boss, there's a guest who's not supposed to be in Westworld, looks like they're wanted for: {:?}", why);
-//     };
-// }
-// }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initializing the global Ellen object
-    // Sets the global loggerprovider
-
-    // Get the global loggerprovider here
-    // Okay that is cool, how is that done?!
-    // Arc gets passed around
-
     let args = Cli::parse();
     let config = args.config;
     let phrases = args.phrases_config;
@@ -1024,7 +871,7 @@ async fn main() -> Result<()> {
                             .with(honeycomb_filtered)
                             .with(stderr_filtered)
                             .init();
-                        // If I ever add support for more than just honeycomb I'd impl a struct or enum
+                        //TODO: If I ever add support for more than just honeycomb I'd impl a struct or enum
                         printdoc! {"
                             Logging Status:
                             Stderr: {}, OTEL: {}-{}
@@ -1080,7 +927,6 @@ async fn main() -> Result<()> {
                         tracing_subscriber::registry()
                             .with(honeycomb_filtered)
                             .init();
-                        // If this ever supported more than honeycomb I'd impl a struct or enum
 
                         printdoc! {"
                             Logging Status:
@@ -1110,9 +956,8 @@ async fn main() -> Result<()> {
         println!("Skipping logging!");
     }
 
+    // Get response messages or fall back
     // change to % to get non string version
-
-    // Get response messages , if this fails return None
     let messages = get_phrases(&phrases);
     let messagesmap: Option<_> = if messages.is_some() {
         match messages.unwrap() {
