@@ -817,9 +817,9 @@ async fn pronouns_send(ctx: &Context, updates_channel_id: u64) {
         ),
     };
     let announcement = format!(
-        "{}'s pronouns are {:#?}.\n",
+        "{}'s pronouns are {}, ",
         name_and_comment.0.unwrap(),
-        pronouns
+        epronouns
     );
     let comment = name_and_comment.1.unwrap();
     let message = announcement + comment;
@@ -1616,6 +1616,71 @@ mod tests {
 
         let species = get_ellen_species(Source::ApiKitsuneGay);
         assert!(species.await.is_ok());
+    }
+    #[test]
+    fn get_ellen_pronouns() {
+        let ellen = Subject {
+            species: None,
+            pronouns: Some("She/Her".to_string()),
+        };
+        let epronouns = ellen.pronouns.as_deref().unwrap();
+
+        // oh no, this will create a new vec every time...
+        let pronouns: Vec<&str> = epronouns.split('/').collect();
+        assert_ne!(
+            pronouns.last(),
+            None,
+            "An invalid value was entered for pronouns"
+        );
+
+        // get a union of these
+        assert_eq!(
+            pronouns.len(),
+            2,
+            "An invalid amount was entered for the pronouns: {:#?}",
+            pronouns
+        );
+
+        let pronoun = *pronouns
+            .choose(&mut rand::thread_rng())
+            .expect("Able to take a reference to a pronoun");
+
+        // This is where I would put witty comments, IF I HAD ANY
+        let name_and_comment: (Option<&str>, Option<&str>) = match pronoun.to_lowercase().as_str() {
+        "she" | "her" => (
+            Some("Ellen"),
+            Some("I am woman hear me roar~ Or mow, I suppose."),
+        ),
+
+        "shi" | "hir" => (Some("Ellen"), Some("Showing your Chakat roots, I assume.")),
+
+        "he" | "him" => (Some("Ev"), Some("Oh right, you are genderfluid!")),
+
+        "they" | "them" => (
+            Some("Ev"),
+            Some("More like... Wait for it. I will calculate a joke..."),
+        ),
+        "ey" | "em" => (Some("Ev"), Some("A fine choice.")),
+        _ => (
+            Some("Ev"),
+            Some("Oh! A new set of pronouns! Time to finally update the code to take live input!"),
+        ),
+    };
+        let announcement = format!(
+            "{}'s pronouns are {}, ",
+            name_and_comment.0.unwrap(),
+            epronouns
+        );
+        let comment = name_and_comment.1.unwrap();
+        let message = announcement + comment;
+        let map = json!({
+            "content": message,
+            "tts": false,
+        });
+        assert_eq!(
+            message,
+            "Ellen's pronouns are She/Her, I am woman hear me roar~ Or mow, I suppose."
+        )
     }
 
     // TODO: Redo this test after watch_a_thing has been refactored
