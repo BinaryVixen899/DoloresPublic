@@ -791,6 +791,8 @@ async fn pronouns_send(ctx: &Context, updates_channel_id: u64) {
         pronouns
     );
 
+    debug!(name:"pronouns_send", "Made it past pronouns assert statements");
+
     let pronoun = *pronouns
         .choose(&mut rand::thread_rng())
         .expect("Able to take a reference to a pronoun");
@@ -821,18 +823,24 @@ async fn pronouns_send(ctx: &Context, updates_channel_id: u64) {
         name_and_comment.0.unwrap(),
         epronouns
     );
+
     let comment = name_and_comment.1.unwrap();
     let message = announcement + comment;
+    debug!(name:"pronouns_send", "Pronouns: {:#?}, Witty Comment: {:#?}", epronouns, comment);
+
     let map = json!({
         "content": message,
         "tts": false,
     });
+    info!(name:"pronouns_send",  "Pronouns response constructed");
+    trace!(name:"pronouns_send", "Pronouns response {:#?}", map);
+
     match ctx.http.send_message(updates_channel_id, &map).await {
         Ok(_) => {
-            info!(name: "pronouns_loop", "Pronouns update sent to updates channel!");
+            info!(name: "pronouns_send", "Pronouns update sent to updates channel!");
         }
         Err(e) => {
-            error!(name: "pronouns_loop", error_text=?e, "We couldn't send the pronouns update to the channel: {:#?}", e);
+            error!(name: "pronouns_send", error_text=?e, "We couldn't send the pronouns update to the channel: {:#?}", e);
         }
     }
 }
