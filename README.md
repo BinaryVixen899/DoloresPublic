@@ -25,7 +25,7 @@ In dev mode, Serina switches her behavior:
 * Dev mode rework
 
 # Installation
-**NOTE: Although I have tested this via a devcontainer, a lot of these commands need root and wthere is a possibility that I missed something. If this is broken, please see manual install and make sure to file an Issue.**
+**NOTE: Although I have tested this via a devcontainer, a lot of these commands need root and there is a possibility that I missed something. If this is broken, please see manual install and make sure to file an Issue.**
 
 You will need two things to install Serina.
 * [Cargo Make](https://crates.io/crates/cargo-make)
