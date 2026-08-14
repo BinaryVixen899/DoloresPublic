@@ -292,7 +292,7 @@ impl EventHandler for Handler {
                     msg if UncasedStr::new("Mow").eq(msg) => Some(String::from("Mowwwwwwwwww~")),
                     msg if UncasedStr::new("Chirp").eq(msg) => {
                         Some(String::from("Gotta go fast, as they say."))
-                   }
+                    }
                     msg if UncasedStr::new("Yip Yap!").eq(&msg) => {
                         Some(String::from("A shocking number of coyotes are killed every year in ACME product related incidents."))
                     }
@@ -1199,7 +1199,7 @@ async fn ellenpronouns(ctx: &Context, msg: &Message) -> CommandResult {
     };
 
     info!(name: "ellenpronouns", pronouns=%pnoun, "Pronouns {}", &pnoun);
-    let content = format!("Ellen pronouns are {}", &pnoun);
+    let content = format!("Ellen's pronouns are {}", &pnoun);
     let response = MessageBuilder::new().push(&content).build();
     msg.reply(ctx, &response).await?;
 
