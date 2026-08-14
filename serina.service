@@ -1,5 +1,5 @@
 [Unit]
-Description = "Serena as a service"
+Description = "Serina as a service"
 After=network.target
 StartLimitIntervalSec=300
 StartLimitIntervalSec=60

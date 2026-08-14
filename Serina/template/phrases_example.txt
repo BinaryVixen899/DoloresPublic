@@ -1,0 +1,4 @@
+AnimalNoise
+Oh my, an animal noise!
+AnotherAnimalNoise
+Oh wow, another animal noise!
