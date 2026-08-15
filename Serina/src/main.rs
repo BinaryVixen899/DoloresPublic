@@ -35,7 +35,7 @@ use notion::NotionApi;
 use serenity::async_trait;
 use serenity::client::bridge::gateway::ShardManager;
 use serenity::framework::standard::macros::{command, group};
-use serenity::framework::standard::{CommandResult, StandardFramework};
+use serenity::framework::standard::{CommandResult, CommandError, StandardFramework};
 use serenity::json::JsonMap;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Activity;
@@ -1172,7 +1172,7 @@ async fn ellenspecies(ctx: &Context, msg: &Message) -> CommandResult {
         Ok(spcs) => spcs,
         Err(e) => {
             error!(name: "ellenspecies", error_text=?e, "We encountered an error while fetching from Notion: {:#?}", e);
-            "Kitsune".to_string()
+            return Err(CommandError::from(e));
         }
     };
 
