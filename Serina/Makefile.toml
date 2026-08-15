@@ -85,6 +85,7 @@ run_task = [
     #source files have changed (restart service) 
     { name = "restart_sysd_service" },
 ]
+# TODO INTELLIGENT RESTARTS
 
 [tasks.development-flow]
 dependencies = ["prebuild", "install"]
@@ -96,3 +97,5 @@ dependencies = [
     "install_post_build",
     "serina_service_routing",
 ]
+#TODO:give an option for folks who don't care about the service files
+# TODO: CHECK IF THIS EATS CUSTOM SERVICE FILES
