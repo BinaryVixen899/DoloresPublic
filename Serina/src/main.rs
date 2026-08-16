@@ -616,8 +616,14 @@ async fn speciesloop<S: Stream<Item = Result<String>>>(
 
         let mut ellen = ellen_lock.lock().await;
 
-        // Use a default if species is an error
-        let species = species.unwrap_or(String::from("Kitsune"));
+        // Continue if species is an error
+        let species = species; 
+        let species = if let Ok(species) = species {
+            species
+        } else {
+            continue;
+        };
+        
         // pass back errors that the stream generated
         info!(name: "species_loop", species=?species, lastpronouns=?ellen.species, "Checking Species!");
         if ellen.species.as_deref() != Some(species.as_str()) {
@@ -1253,7 +1259,7 @@ async fn get_ellen_species(src: Source) -> Result<String> {
 
                 e => {
                     error!(name: "get_ellen_species", error_text=?e, "The issue was in detecting a synced block {:?}", e);
-                    "Kitsune".to_string()
+                    return Err(anyhow!("Issue encountered detecting a synced block: {:?}", e));
                 }
             };
             debug!(name: "get_ellen_species", species=?species, "Species {:#?}", species);
