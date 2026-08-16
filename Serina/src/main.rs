@@ -627,23 +627,13 @@ async fn speciesloop<S: Stream<Item = Result<String>>>(
                 continue;
             }
             ellen.species = Some(species);
-            send_species(ctx, specieschannelid).await;
+            send_species(ctx, specieschannelid, ellen.species.as_deref().unwrap().to_string()).await;
         }
     }
     Err(anyhow!("Stream Ended"))
 }
 
-async fn send_species(ctx: &Context, specieschannelid: u64) {
-    // Get the current species
-    let data_read: tokio::sync::RwLockReadGuard<'_, TypeMap> = ctx.data.read().await;
-    let ellen_lock = data_read
-        .get::<SubjectContainer>()
-        .expect("Expected ResponseMessageContainer in TypeMap.")
-        .clone();
-
-    let ellen = ellen_lock.lock().await;
-
-    let species = ellen.species.as_deref().unwrap();
+async fn send_species(ctx: &Context, specieschannelid: u64, species: String) {
     // The lock drops at this point, and the original species can presumably be updated
     let wittycomment = match species.to_lowercase().as_str() {
                     "kitsune"| "狐" | "きつね" => {
@@ -757,7 +747,7 @@ async fn pronounsloop<S: Stream<Item = Result<String>>>(
                     continue;
                 }
                 ellen.pronouns = Some(pronouns);
-                pronouns_send(ctx, updates_channel_id).await;
+                pronouns_send(ctx, updates_channel_id, ellen.pronouns.as_deref().unwrap().to_string()).await;
             }
         }
     }
@@ -765,15 +755,9 @@ async fn pronounsloop<S: Stream<Item = Result<String>>>(
     Err(anyhow!("Pronouns loop failed!"))
 }
 
-async fn pronouns_send(ctx: &Context, updates_channel_id: u64) {
-    let data_read: tokio::sync::RwLockReadGuard<'_, TypeMap> = ctx.data.read().await;
-    let ellen_arc = data_read
-        .get::<SubjectContainer>()
-        .expect("Expected ResponseMessageContainer in TypeMap.")
-        .clone();
+async fn pronouns_send(ctx: &Context, updates_channel_id: u64, pronouns: String) {
 
-    let ellen = ellen_arc.lock().await;
-    let epronouns = ellen.pronouns.as_deref().unwrap();
+    let epronouns = pronouns.as_str();
 
     // oh no, this will create a new vec every time...
     let pronouns: Vec<&str> = epronouns.split('/').collect();
